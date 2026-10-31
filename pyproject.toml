@@ -7,7 +7,7 @@ name = "edge-llm"
 version = "0.0.0"
 description = "Roofline prediction vs measurement of small-LLM inference on an Arm CPU"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 # Exact pins: the analysis must give the same numbers when re-run later.
 dependencies = [
     "numpy==2.5.4",
@@ -39,8 +39,8 @@ markers = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 
 [tool.black]
 line-length = 100
-target-version = ["py311"]
+target-version = ["py312"]
