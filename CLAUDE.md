@@ -225,7 +225,8 @@ edge-llm-on-arm/
 1. **Environment capture before every sweep session:** machine type and zone, `lscpu` (incl.
    feature flags), kernel, compiler versions, llama.cpp commit and build flags, each build's
    system-info line, SVE vector length, model SHA256s, CPU governor (record "not exposed" if
-   absent), date/time (UTC). Stored alongside the raw results.
+   absent), date/time (UTC). Stored alongside the raw results. Sweep sessions start from a
+   clean, pushed commit, so the capture shows `dirty: false`.
 2. **Fixed llama-bench settings**, recorded and never varied within the sweep: batch 1
    (single sequence), `n_batch`, `n_ubatch`, KV-cache type, flash-attention setting, mmap.
    Decode is llama-bench's `tg` test, which starts from an empty context.
@@ -304,7 +305,9 @@ projection) at higher precision in low-bit formats — so effective bytes always
 tensor table, never from the format name.
 
 **Outputs.** For every point: `ratio = measured / predicted`. Expect ratio ≤ 1; a ratio > 1
-means the model is wrong somewhere — stop and investigate (§13). Arithmetic intensity
+means the model is wrong somewhere — stop and investigate (§13). On this machine the L3 is
+80 MiB and the smallest quantised model is only a few times larger, so a decode ratio above
+1 for that model points first at weights staying in cache between tokens. Arithmetic intensity
 (FLOPs/byte) per configuration goes on a classic roofline plot with the `B(t)` and `C(t)`
 ceilings.
 
@@ -359,11 +362,19 @@ everything else. If behind by end of Day 7: cut the microbenchmark to scalar vs 
 
 - Repository: `github.com/Adnan082/edge-llm-on-arm`, private until the project is finished
   (the owner makes it public)
-- Machine type / region / zone / on-demand price / date: `c4a-highcpu-8` / `us-central1` / `TBD` / `TBD` / `TBD`
-- CPU (`lscpu` model name, cores, caches; flags incl. `asimddp`, `i8mm`, `sve`, `sve2`, `sme`): `TBD`
-- SVE vector length (from the machine, e.g. `/proc/sys/abi/sve_default_vector_length`): `TBD`
-- Compiler versions and exact flags: `TBD`
-- llama.cpp commit: `TBD`
+- Machine type / region / zone / on-demand price / date: `c4a-highcpu-8` / `us-central1` /
+  `us-central1-b` / `TBD` (from the GCP price page) / first used 2026-10-31. 15.6 GiB RAM;
+  Ubuntu 24.04.5 LTS, kernel `7.0.0-1014-gcp`; CPU governor not exposed. Source for this and
+  the next three lines: `results/raw/env/2026-10-31T2015Z.json`.
+- CPU: `Neoverse-V2` (stepping r0p1), 8 cores, 1 thread per core (no SMT, verified), 1 socket,
+  1 NUMA node. Caches: L1d 64 KiB and L1i 64 KiB per core, L2 2 MiB per core, L3 80 MiB (one
+  instance, probably shared with other VMs on the host). Flags: `asimddp`, `i8mm`, `sve`,
+  `sve2`, `svei8mm` and `bf16` present; `sme` and `sme2` absent.
+- SVE vector length: 128 bits, from both `prctl` and the `/proc` default; matches §5.
+- Compiler versions: GCC/G++ 13.3.0 (`Ubuntu 13.3.0-6ubuntu2~24.04.1`), GNU ld 2.42, CMake
+  3.28.3, GNU Make 4.3, Python 3.12.3; Clang not installed. Exact build flags: `TBD` (Day 2).
+- llama.cpp commit: `ddf48f85c933c1f438212a02eb21e7b001d2d37d` (HEAD of `ggml-org/llama.cpp`
+  on 2026-10-31; pinned in `infra/llamacpp.commit`).
 - KleidiAI build flag, how activation was verified, tensor types it handles: `TBD`
 - Other Arm paths (e.g. Q4_0 repacking) and their state in each build: `TBD`
 - llama-bench fixed settings (`n_batch`, `n_ubatch`, KV type, flash attention, mmap, warm-up): `TBD`
@@ -447,3 +458,9 @@ everything else. If behind by end of Day 7: cut the microbenchmark to scalar vs 
 - 2026-10-31 — Python 3.12 (ADR-011) and the four formats (ADR-012) decided. The code still
   says 3.11 in CI and marks the format list provisional; Sonnet updates both at the start of
   Day 2.
+- 2026-10-31 — **Day 1 gate passed** (commit `b034c8e`; record
+  `results/raw/env/2026-10-31T2015Z.json`). In plain English: we rented an 8-core Google Axion
+  machine and confirmed it is an Arm Neoverse V2 with the instructions this project tests
+  (SDOT, SMMLA, SVE2 at 128 bits), one thread per core and no SME. llama.cpp is pinned to
+  `ddf48f8`. The capture shows `dirty` only because the new pin file was not committed yet.
+  Next: Day 2.
