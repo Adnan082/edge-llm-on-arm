@@ -1,0 +1,8 @@
+# Machine facts (CLAUDE.md §5, §11). TBD = not yet read from the VM / price page.
+machine_type: c4a-highcpu-8
+region: us-central1
+zone: TBD
+on_demand_price_usd_per_hour: TBD
+price_date: TBD
+# One entry per sitting: {date: YYYY-MM-DD, hours: <float>, note: <str>}
+vm_hours: []

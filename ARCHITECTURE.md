@@ -4,8 +4,9 @@
 > one step to the next, and the rules that keep the results honest. The spec (`CLAUDE.md`)
 > says *what* we measure and *why*; this file says *how* the code is arranged to do it.
 >
-> **Status: design only — no code exists yet.** When code changes the design, update this
-> file in the same commit.
+> **Status: Day 1 skeleton.** Only `infra/setup_vm.sh`, `bench/env_capture.py`, `make env`,
+> `make test` and `make lint` do anything; every other program is a placeholder. When code
+> changes the design, update this file in the same commit.
 
 ---
 

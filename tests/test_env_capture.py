@@ -1,0 +1,103 @@
+"""env_capture: parsing helpers on synthetic text, plus one hardware check for the VM."""
+
+from datetime import UTC, datetime
+
+import pytest
+
+from bench import env_capture
+
+CPUINFO = """processor\t: 0
+BogoMIPS\t: 2000.00
+Features\t: fp asimd evtstrm aes asimddp sve sve2 i8mm bf16
+CPU implementer\t: 0x41
+
+processor\t: 1
+Features\t: this second block must be ignored
+"""
+
+
+def test_session_id_format():
+    when = datetime(2026, 11, 4, 9, 7, 55, tzinfo=UTC)
+    assert env_capture.make_session_id(when) == "2026-11-04T0907Z"
+
+
+def test_cpuinfo_features_come_from_first_cpu_only():
+    feats = env_capture.parse_cpuinfo_features(CPUINFO)
+    assert feats == ["fp", "asimd", "evtstrm", "aes", "asimddp", "sve", "sve2", "i8mm", "bf16"]
+
+
+def test_key_flag_presence_is_exact_match_not_substring():
+    # "sve2" being present must not make "sve" or "sme" true by accident.
+    flags = env_capture.key_flag_presence(["asimd", "sve2"])
+    assert flags["asimd"] and flags["sve2"]
+    assert not flags["sve"] and not flags["sme"] and not flags["i8mm"]
+
+
+def test_cpuinfo_without_features_line():
+    assert env_capture.parse_cpuinfo_features("processor : 0\n") == []
+
+
+def test_threads_per_core_from_lscpu_json():
+    lscpu = {"lscpu": [{"field": "Thread(s) per core:", "data": "1"}]}
+    assert env_capture.threads_per_core(lscpu) == "1"
+    assert env_capture.threads_per_core(None) is None
+
+
+def test_parse_cmake_cache_keeps_only_wanted_keys():
+    cache = (
+        "// A comment\n"
+        "GGML_CPU_KLEIDIAI:BOOL=ON\n"
+        "CMAKE_BUILD_TYPE:STRING=Release\n"
+        "UNRELATED:STRING=x\n"
+        "# CMAKE_C_FLAGS:STRING=ignored comment\n"
+    )
+    assert env_capture.parse_cmake_cache(cache) == {
+        "GGML_CPU_KLEIDIAI": "ON",
+        "CMAKE_BUILD_TYPE": "Release",
+    }
+
+
+def test_parse_sha256sums():
+    good = "a" * 64
+    text = f"{good}  qwen3-0.6b-f16.gguf\n{good} *other.gguf\nnot-a-hash  bad.gguf\n"
+    assert env_capture.parse_sha256sums(text) == {
+        "qwen3-0.6b-f16.gguf": good,
+        "other.gguf": good,
+    }
+
+
+def test_capture_has_every_item_the_spec_requires():
+    record = env_capture.capture("2026-11-04T0907Z", "start")
+    for key in (
+        "machine",  # machine type and zone
+        "cpu",  # lscpu + feature flags + governor
+        "os",  # kernel
+        "compilers",
+        "llama_cpp",  # commit
+        "builds",  # flags + system-info line
+        "model_sha256",
+        "sve_vector_length",
+        "captured_utc",  # date/time (UTC)
+        "loadavg_1_5_15",
+        "repo",
+    ):
+        assert key in record
+    assert record["cpu"]["governor"]  # a value or the literal "not exposed", never empty
+
+
+def test_main_refuses_to_overwrite_a_raw_record(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "sys.argv",
+        ["env_capture", "--session-id", "S", "--out-dir", str(tmp_path)],
+    )
+    assert env_capture.main() == 0
+    assert (tmp_path / "S.json").exists()
+    assert env_capture.main() == 1  # second run must not touch the first file
+
+
+@pytest.mark.hardware
+def test_vm_is_arm_with_dotprod_and_no_smt():
+    cpu = env_capture.cpu_info()
+    assert env_capture.platform.machine() == "aarch64"
+    assert cpu["key_flags"]["asimddp"]
+    assert cpu["threads_per_core"] == "1"  # spec §5: one vCPU = one core (verify)

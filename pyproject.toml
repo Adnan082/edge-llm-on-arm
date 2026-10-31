@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "edge-llm"
+version = "0.0.0"
+description = "Roofline prediction vs measurement of small-LLM inference on an Arm CPU"
+readme = "README.md"
+requires-python = ">=3.11"
+# Exact pins: the analysis must give the same numbers when re-run later.
+dependencies = [
+    "numpy==2.5.4",
+    "pandas==3.1.0",
+    "matplotlib==3.11.2",
+    "pyyaml==6.0.3",
+    "gguf==0.19.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.2.0",
+    "ruff==0.17.3",
+    "black==26.10.1",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+# bench/ is a namespace package so tests can import bench.env_capture.
+pythonpath = ["src", "."]
+testpaths = ["tests"]
+# Hardware tests need the Arm VM: run them there with `pytest -m hardware`.
+addopts = "-m 'not hardware'"
+markers = [
+    "hardware: needs the Arm VM (CPU features, built llama.cpp, model files)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]

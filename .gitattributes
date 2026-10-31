@@ -1,0 +1,4 @@
+# LF everywhere: the shell scripts and the Makefile run on Linux, and a CRLF
+# checkout from Windows would break them.
+* text=auto eol=lf
+*.gguf binary

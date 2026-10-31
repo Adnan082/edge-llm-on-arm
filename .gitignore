@@ -1,0 +1,19 @@
+# Never commit model weights or builds (CLAUDE.md §9)
+*.gguf
+work/
+
+# Python
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Compiled microbenchmarks
+micro/build/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store

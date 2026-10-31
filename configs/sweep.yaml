@@ -1,0 +1,31 @@
+# Sweep definition (CLAUDE.md §5, §7). Read by bench/run_sweep.py and roofline.py.
+# TBD = not decided or not yet measured; fill in from the machine, never guess.
+
+models:
+  small:
+    hf_repo: Qwen/Qwen3-0.6B
+    hf_revision: TBD
+    f16_file: TBD
+    f16_sha256: TBD
+  large:
+    hf_repo: Qwen/Qwen3-1.7B
+    hf_revision: TBD
+    f16_file: TBD
+    f16_sha256: TBD
+
+# Provisional: spec asks for 3-4 formats with Q4_0 required (§5); confirm on Day 2.
+quants: [F16, Q8_0, Q4_0, Q4_K_M]
+
+builds: [baseline, kleidiai]
+threads: [1, 2, 4, 8]
+prefill_prompt_lengths: [128, 512, 2048]
+decode_tokens: 128   # llama-bench tg128, from an empty context
+batch: 1
+repetitions: 5
+
+# CLAUDE.md §14 item 4: decode from an empty context only, or also at one depth?
+decode_depth: TBD
+
+slow_points: []      # points run with 3 repetitions; each needs a reason
+pruned_points: []    # {point, reason}; only before any full-sweep results exist (§7 item 10)
+pilot: TBD           # Day 3
