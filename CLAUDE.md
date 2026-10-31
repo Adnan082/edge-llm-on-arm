@@ -139,7 +139,7 @@ plus the evidence. Null results are results.
   commit's tools, or an official F16 GGUF) and produce every other format locally with
   `llama-quantize` from the same commit, using its default tensor-type mix (ADR-010). Pin
   the Hugging Face revision, file names, SHA256 hashes and each file's per-tensor type mix.
-- **Quantisation formats:** 3–4 (e.g. F16, Q8_0, Q4_0, Q4_K_M). Q4_0 is required — it is
+- **Quantisation formats:** F16, Q8_0, Q4_0 and Q4_K_M (ADR-012). Q4_0 is required — it is
   the format Arm's optimised paths target most directly.
 - **Sweep axes:** threads ∈ {1, 2, 4, 8} (8 = every core of `c4a-highcpu-8`);
   prefill prompt length ∈ {128, 512, 2048}; decode = 128 generated tokens (llama-bench
@@ -184,7 +184,7 @@ edge-llm-on-arm/
 ├── CLAUDE.md                 # this file
 ├── ARCHITECTURE.md           # how the parts connect: data flow, file contracts, rules
 ├── README.md                 # headline result first, then how to reproduce
-├── pyproject.toml            # Python 3.11, deps pinned
+├── pyproject.toml            # Python 3.12, deps pinned
 ├── Makefile                  # make env / build / models / bandwidth / peak / predict / bench / analyse / figures / micro / test
 ├── configs/
 │   ├── sweep.yaml            # models, quants, threads, prompt lengths, repeats, pruned points + reason
@@ -315,7 +315,7 @@ thread synchronisation (grows with threads, matters most for small models); non-
 
 ## 9. Engineering conventions
 
-- Python 3.11, type hints, `ruff` + `black`, `pytest`. C++17, `-O3 -mcpu=native` (on
+- Python 3.12 (Ubuntu 24.04's own; ADR-011), type hints, `ruff` + `black`, `pytest`. C++17, `-O3 -mcpu=native` (on
   AArch64 this sets both architecture and tuning); record the exact flags.
 - **Microbenchmark hygiene:** compile the scalar variant with auto-vectorisation off (GCC
   `-fno-tree-vectorize`; Clang `-fno-vectorize -fno-slp-vectorize`) — at `-O3` the compiler
@@ -429,6 +429,8 @@ everything else. If behind by end of Day 7: cut the microbenchmark to scalar vs 
 | ADR-008 | 2026-10-31 | Machine: `c4a-highcpu-8` (8 vCPUs, 16 GB) in `us-central1`; a test VM started there | Enough memory for the planned models; predictions stay valid at any size because `B(t)` and `C(t)` are measured per thread count; fits the free-trial limits | `c4a-highcpu-16` (longer thread sweep; double the cost; all-regions CPU limit unconfirmed) |
 | ADR-009 | 2026-10-31 | Models: Qwen3 0.6B and Qwen3 1.7B | Ungated (reproducible without an account), Apache-2.0, well supported in llama.cpp; the sizes fit the ~0.5B / ~1.5–3B plan and the 16 GB VM even at F16 | Llama 3.2 and Gemma 3 (gated downloads); Qwen2.5 (older) |
 | ADR-010 | 2026-10-31 | Quantisation mix: `llama-quantize` default (some tensors kept at higher precision) | Matches what users actually run; the per-tensor table makes the mix explicit in the roofline | `--pure` (cleaner per-format attribution, but not what users run) |
+| ADR-011 | 2026-10-31 | Python 3.12 for the project, on the VM and in CI | It is Ubuntu 24.04's own Python, so the VM needs no extra install; CI should test the version the measurements run on | Python 3.11 (the original spec; needs an extra install on Ubuntu 24.04) |
+| ADR-012 | 2026-10-31 | Formats: F16, Q8_0, Q4_0, Q4_K_M | Q4_0 is KleidiAI's main target and Q8_0 may also be accelerated (verify); F16 and Q4_K_M are the expected negative controls, and together the four span the heaviest format to the most popular 4-bit one | Three formats (shorter sweep, but loses a control or the popular Q4_K_M) |
 
 ## 16. Progress Log
 
@@ -442,3 +444,6 @@ everything else. If behind by end of Day 7: cut the microbenchmark to scalar vs 
   2–3, then the Day 1 gate.
 - 2026-10-31 — Models (ADR-009) and quantisation mix (ADR-010) decided; §14 items 1–3
   closed. Next: the Day 1 gate.
+- 2026-10-31 — Python 3.12 (ADR-011) and the four formats (ADR-012) decided. The code still
+  says 3.11 in CI and marks the format list provisional; Sonnet updates both at the start of
+  Day 2.
