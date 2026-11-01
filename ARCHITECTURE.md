@@ -190,9 +190,10 @@ Exact fields are defined in `src/edge_llm/schema.py`; this is the overview.
   `roofline.py` and `analyse.py`. One pass over every thread count: kernel, streams per
   thread (k), buffer size, pinning (and the `sched_getcpu()` check), at least 20 samples in
   bytes/s with median, IQR and max, compile flags, load average before/after. Next to it,
-  `..._read_loop.s` is the disassembly of the read loop; the record also holds the
-  accumulator check (the 1-thread result must not change when the independent accumulators
-  are doubled, at k = 1 and k = 8). Records from before Day 3 have k = 1 only.
+  `..._read_loop.s` is the disassembly of the read loops (16 and 24 accumulators, every k);
+  the record also holds the accumulator check: at one thread and every k, the result with the
+  24 accumulators (the most that fit in registers) must be within 3 % of the 16 the kernel
+  uses, and no loop may touch the stack. Records from before Day 3 have k = 1 only.
 - `results/raw/peak/<session_id>.json` — from `micro/run_peak.py`, read by `roofline.py`.
   Per instruction class and thread count: the independent accumulators in the loop, at least
   20 samples in instructions/s and in operations/s, median, IQR and max, the pin check; the

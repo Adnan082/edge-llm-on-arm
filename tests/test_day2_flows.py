@@ -13,7 +13,7 @@ import pytest
 from bench import build_record, check_builds, common
 from bench.bandwidth import run_bandwidth
 from edge_llm import gguf_table
-from tests.test_bandwidth_wrapper import fake_result, fake_run
+from tests.test_bandwidth_wrapper import fake_result, fake_run, read_loop_text
 from tests.test_build_record import CMAKE_SNIPPET, cache
 from tests.test_gguf_table import write_tiny
 
@@ -163,14 +163,18 @@ def test_run_bandwidth_main_writes_record_and_disassembly(tmp_path, monkeypatch,
     out = tmp_path / "bw"
     monkeypatch.setattr(run_bandwidth, "ensure_binary", lambda: {"sha256": "x"})
     monkeypatch.setattr(run_bandwidth, "thread_counts", lambda: [1, 2, 4, 8])
-    monkeypatch.setattr(run_bandwidth, "objdump_read_loop", lambda: "0000 <read_slice_acc8_k1>:\n")
+    monkeypatch.setattr(
+        run_bandwidth,
+        "disassemble_read_loops",
+        lambda: {n: read_loop_text(n) for n in run_bandwidth.READ_LOOP_FUNCTIONS},
+    )
     calls = []
 
     def fake_run_once(t, extra):
         calls.append((t, tuple(extra)))
         if "--acc-check" in extra:
             streams = [int(k) for k in extra[extra.index("--streams") + 1].split(",")]
-            results = [fake_result("read", 1, k, acc=a) for k in streams for a in (4, 8, 16)]
+            results = [fake_result("read", 1, k, acc=a) for k in streams for a in (16, 24)]
             # flat across accumulators: only the stream count changes the level
             for r in results:
                 r["samples_bytes_per_s"] = [12e9] * 25
@@ -195,8 +199,47 @@ def test_run_bandwidth_main_writes_record_and_disassembly(tmp_path, monkeypatch,
     assert [p["threads"] for p in rec["points"] if p["hugepage"]] == [1, 8]
     assert all(p["streams"] in (1, 2, 4, 8) for p in rec["points"] if p["kernel"] == "read")
     assert rec["objdump_file"].endswith("_start_read_loop.s")
+    assert set(rec["acc_check"]["by_streams"]) == {"1", "2", "4", "8"}
+    assert len(rec["acc_check"]["loops"]) == 8
+    listing = (out / names[1]).read_text()
+    assert all(f"# ===== {n} =====" in listing for n in run_bandwidth.READ_LOOP_FUNCTIONS)
     assert (8, ("--kernel", "read", "--streams", "1", "--hugepage", "--reps", "30")) in calls
 
     # a second `start` in the same session is skipped, never overwritten
     assert run_bandwidth.main() == 0
     assert sorted(p.name for p in out.iterdir()) == names
+
+
+def test_a_spilling_loop_still_writes_the_record_but_exits_non_zero(tmp_path, monkeypatch, session):
+    out = tmp_path / "bw"
+    monkeypatch.setattr(run_bandwidth, "ensure_binary", lambda: {"sha256": "x"})
+    monkeypatch.setattr(run_bandwidth, "thread_counts", lambda: [1, 2])
+    monkeypatch.setattr(
+        run_bandwidth,
+        "disassemble_read_loops",
+        lambda: {
+            n: read_loop_text(n, spill=n == "read_slice_acc24_k4")
+            for n in run_bandwidth.READ_LOOP_FUNCTIONS
+        },
+    )
+
+    def fake_run_once(t, extra):
+        if "--acc-check" in extra:
+            results = [fake_result("read", 1, k, acc=a) for k in (1, 2, 4, 8) for a in (16, 24)]
+            for r in results:
+                r["samples_bytes_per_s"] = [12e9] * 25
+            return {"threads": 1, "results": results}
+        if "--hugepage" in extra:
+            run = fake_run(t, streams=())
+            run["results"] = [fake_result("read", t, 1, hugepage=True)]
+            return run
+        return fake_run(t)
+
+    monkeypatch.setattr(run_bandwidth, "run_once", fake_run_once)
+    monkeypatch.setattr("sys.argv", ["run_bandwidth", "--phase", "start", "--out-dir", str(out)])
+    assert run_bandwidth.main() == 1
+    rec = json.loads((out / "2026-11-02T0900Z_start.json").read_text())
+    assert rec["acc_check"]["pass"] is False
+    assert [lp["function"] for lp in rec["acc_check"]["loops"] if not lp["ok"]] == [
+        "read_slice_acc24_k4"
+    ]

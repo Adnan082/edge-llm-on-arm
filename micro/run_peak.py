@@ -42,9 +42,9 @@ OUT_DIR = common.RESULTS_DIR / "raw" / "peak"
 DISASM_DIR = REPO_ROOT / "micro" / "disasm"
 COMPILE_FLAGS = ["-O3", "-mcpu=native", "-std=c++17", "-fopenmp", "-Wall", "-Wextra"]
 REPS = 20
-# instructions of each class per loop iteration, per accumulator count (see peak.cpp); FP16 FMLA
-# issues two per chain per iteration (+x*y then -x*y), the others one.
-INSTR_PER_ACC = {"sdot": 1, "smmla": 1, "fmla_f16": 2, "fmlal": 1, "fma32": 1}
+# instructions of each class per loop iteration, per accumulator count (see peak.cpp): one per
+# chain for every class.
+INSTR_PER_ACC = {"sdot": 1, "smmla": 1, "fmla_f16": 1, "fmlal": 1, "fma32": 1}
 
 
 def compile_command() -> list[str]:

@@ -7,7 +7,7 @@
 //   read  - every thread sums its own slice of one big buffer of 64-bit integers with NEON loads.
 //           Decode reads weights and writes almost nothing, so this is the roofline input.
 //           With --streams k the thread splits its slice into k equal parts and each loop step
-//           reads one 128-byte block from each part, so k sequential streams advance together
+//           reads one 256-byte block (16 accumulators) from each part, so k sequential streams advance
 //           (ADR-017: one stream per core does not reach the memory limit). B(t) is the best
 //           median over k; the k = 1 result is kept as the simple-sequential reference.
 //           --hugepage (diagnostic only, never B(t)) asks for transparent huge pages with
@@ -44,7 +44,7 @@
 
 // ---- read kernel ------------------------------------------------------------------------
 // ACC independent vector accumulators, so the loop is limited by the loads and not by the
-// latency of one chain of adds; K streams, each read 2 * ACC elements (128 bytes for ACC = 8)
+// latency of one chain of adds; K streams, each read 2 * ACC elements (256 bytes for ACC = 16)
 // per loop step. n must be a multiple of K * 2 * ACC.
 template <int ACC, int K>
 static inline uint64_t read_slice_impl(const uint64_t* p, size_t n) {
@@ -70,35 +70,37 @@ static inline uint64_t read_slice_impl(const uint64_t* p, size_t n) {
 #endif
 }
 
-// Separate, named, never-inlined copies: the disassembly of read_slice_acc8_k1 is committed as
-// evidence of what the timed loop really is. The (4,8,16)-accumulator copies at k = 1 and k = 8
-// are for the accumulator check; k = 2 and 4 only exist with 8 accumulators.
+// Separate, named, never-inlined copies: the disassembly of the read_slice_acc16_k* loops is
+// committed as evidence of what the timed loops really are. 16 accumulators are the default at
+// every k. The 24-accumulator copies exist only for the accumulator check: 24 is the largest count
+// that fits in registers next to the loaded data and the stream pointers, and run_bandwidth.py
+// checks in the disassembly that neither loop touches the stack.
 #define READ_SLICE(ACC, K)                                                               \
     extern "C" __attribute__((noinline, noclone)) uint64_t read_slice_acc##ACC##_k##K(   \
         const uint64_t* p, size_t n) {                                                   \
         return read_slice_impl<ACC, K>(p, n);                                            \
     }
-READ_SLICE(4, 1)
-READ_SLICE(4, 8)
-READ_SLICE(8, 1)
-READ_SLICE(8, 2)
-READ_SLICE(8, 4)
-READ_SLICE(8, 8)
 READ_SLICE(16, 1)
+READ_SLICE(16, 2)
+READ_SLICE(16, 4)
 READ_SLICE(16, 8)
+READ_SLICE(24, 1)
+READ_SLICE(24, 2)
+READ_SLICE(24, 4)
+READ_SLICE(24, 8)
 
 typedef uint64_t (*read_fn)(const uint64_t*, size_t);
 static read_fn read_fn_for(int acc, int streams) {
 #define PICK(A, K) \
     if (acc == A && streams == K) return read_slice_acc##A##_k##K
-    PICK(4, 1);
-    PICK(4, 8);
-    PICK(8, 1);
-    PICK(8, 2);
-    PICK(8, 4);
-    PICK(8, 8);
     PICK(16, 1);
+    PICK(16, 2);
+    PICK(16, 4);
     PICK(16, 8);
+    PICK(24, 1);
+    PICK(24, 2);
+    PICK(24, 4);
+    PICK(24, 8);
 #undef PICK
     fprintf(stderr, "unsupported --acc %d with --streams %d\n", acc, streams);
     exit(2);
@@ -176,7 +178,8 @@ static Result run_read(int t, size_t total_bytes, int warmup, int reps, int acc,
     read_fn fn = read_fn_for(acc, streams);
 
     size_t slice = (total_bytes / sizeof(uint64_t)) / t;
-    slice -= slice % (32 * 8);  // each of up to 8 streams a multiple of 2 * the largest ACC
+    // each of up to 8 streams a multiple of 2 * ACC for ACC = 16 and 24 (lcm(32, 48) = 96)
+    slice -= slice % (96 * 8);
     const size_t m = slice * t;
     r.buffer_bytes = r.bytes_per_rep = m * sizeof(uint64_t);
     uint64_t* buf = (uint64_t*)alloc_pages(r.buffer_bytes, hugepage);
@@ -320,7 +323,7 @@ int main(int argc, char** argv) {
     CPU_ZERO(&allowed);
     sched_getaffinity(0, sizeof(allowed), &allowed);
 
-    int threads = 1, reps = 30, warmup = 3, acc = 8;
+    int threads = 1, reps = 30, warmup = 3, acc = 16;
     size_t read_mib = 1024, triad_mib = 512;  // 1 GiB read buffer; 3 x 512 MiB for triad
     std::string kernel = "both";
     std::vector<int> streams = {1};
@@ -351,11 +354,10 @@ int main(int argc, char** argv) {
     omp_set_dynamic(0);
 
     std::vector<Result> results;
-    if (acc_check) {  // read kernel with 4, 8 and 16 accumulators, at each requested stream count
+    if (acc_check) {  // read kernel with 16 and 24 accumulators, at each requested stream count
         for (int k : streams)
-            for (int a : {4, 8, 16})
-                if (!(k != 1 && k != 8 && a != 8))
-                    results.push_back(run_read(threads, read_mib << 20, warmup, reps, a, k, false));
+            for (int a : {16, 24})
+                results.push_back(run_read(threads, read_mib << 20, warmup, reps, a, k, false));
     } else {
         if (kernel == "read" || kernel == "both")
             for (int k : streams)

@@ -11,7 +11,7 @@ from edge_llm.schema import BandwidthRecord, SchemaError
 STREAM_GAIN = {1: 1.0, 2: 1.2, 4: 1.3, 8: 1.25}
 
 
-def fake_result(kernel, t, k=1, acc=8, base=10e9, reps=25, ok=True, hugepage=False):
+def fake_result(kernel, t, k=1, acc=16, base=10e9, reps=25, ok=True, hugepage=False):
     scale = STREAM_GAIN[k] if kernel == "read" else 1.0
     samples = [base * t * scale * (1 + 0.001 * (i % 5)) for i in range(reps)]
     return {
@@ -98,27 +98,90 @@ def test_a_thread_on_the_wrong_core_is_rejected():
         BandwidthRecord.from_dict(record(pts))
 
 
-def test_acc_check_passes_when_doubling_accumulators_changes_nothing():
-    def r(acc, base, streams=1):
-        return {"acc": acc, "streams": streams, "samples_bytes_per_s": [base] * 5}
-
-    ok = rb.acc_check_summary({"threads": 1, "results": [r(4, 9e9), r(8, 12e9), r(16, 12.1e9)]})
-    assert ok["pass"] and ok["ratio_16_over_8"] == pytest.approx(12.1 / 12)
-    bad = rb.acc_check_summary({"threads": 1, "results": [r(4, 6e9), r(8, 9e9), r(16, 12e9)]})
-    assert not bad["pass"]
+def acc_result(acc, base, streams=1):
+    return {"acc": acc, "streams": streams, "samples_bytes_per_s": [base] * 5}
 
 
-def test_acc_check_all_needs_every_stream_count_to_pass():
-    def r(acc, base, streams):
-        return {"acc": acc, "streams": streams, "samples_bytes_per_s": [base] * 5}
+def read_loop_text(name, spill=False, store=False):
+    """objdump-style text of a read function: a loop of vector loads and adds."""
+    body = ["movi\tv0.2d, #0x0"]
+    top = 0x780 + 4 * len(body)
+    body += [f"ldr\tq{i % 28 + 1}, [x{i % 8 + 1}, #{16 * i}]" for i in range(8)]
+    body += [f"add\tv{i % 24}.2d, v{i % 24}.2d, v{i % 8 + 1}.2d" for i in range(8)]
+    if spill:
+        body += ["str\tq3, [sp, #16]", "ldr\tq3, [sp, #16]"]
+    if store:
+        body += ["str\tq4, [x9]"]
+    body += ["subs\tx0, x0, #0x1", f"b.ne\t{top:x} <{name}+0x8>", "ret"]
+    lines = [f"0000000000000780 <{name}>:"]
+    lines += [f"  {0x780 + 4 * i:x}:\t{t}" for i, t in enumerate(body)]
+    return "\n".join(lines) + "\n"
 
-    good = [r(a, 12e9, k) for k in (1, 8) for a in (4, 8, 16)]
-    run = {"threads": 1, "results": good}
-    assert rb.acc_check_all(run)["pass"] is True
-    # k = 8 is add-chain bound: 16 accumulators go faster than 8
-    bad = [x for x in good if not (x["streams"] == 8 and x["acc"] == 16)] + [r(16, 16e9, 8)]
-    result = rb.acc_check_all({"threads": 1, "results": bad})
-    assert result["pass"] is False and result["by_streams"]["1"]["pass"] is True
+
+def good_loops(**kw):
+    return [rb.check_read_loop(n, read_loop_text(n, **kw)) for n in rb.READ_LOOP_FUNCTIONS]
+
+
+def test_the_check_compares_24_accumulators_with_the_16_the_kernel_uses():
+    assert (rb.BASE_ACC, rb.LARGE_ACC) == (16, 24)
+    ok = rb.acc_check_summary(
+        {"threads": 1, "results": [acc_result(16, 12e9), acc_result(24, 12.01e9)]}
+    )
+    assert ok["pass"] and ok["ratio_24_over_16"] == pytest.approx(12.01 / 12)
+    assert set(ok["median_bytes_per_s_by_accumulators"]) == {"16", "24"}
+
+
+def test_3_percent_is_the_limit_in_both_directions():
+    def ratio_pass(ratio):
+        run = {"threads": 1, "results": [acc_result(16, 10e9), acc_result(24, ratio * 10e9)]}
+        return rb.acc_check_summary(run)["pass"]
+
+    assert ratio_pass(1.029) and ratio_pass(0.971)
+    assert not ratio_pass(1.038)  # the VM result at k = 8 with 8 vs 16 accumulators
+    assert not ratio_pass(0.96)
+
+
+def test_acc_check_all_records_every_k_and_passes_only_if_all_do():
+    def run_with(ratios):
+        results = []
+        for k, ratio in ratios.items():
+            results += [acc_result(16, 12e9, k), acc_result(24, 12e9 * ratio, k)]
+        return {"threads": 1, "results": results}
+
+    flat = {1: 1.001, 2: 1.0, 4: 0.99, 8: 1.02}
+    out = rb.acc_check_all(run_with(flat), good_loops())
+    assert out["pass"] is True and set(out["by_streams"]) == {"1", "2", "4", "8"}
+    assert [c["streams"] for c in out["by_streams"].values()] == [1, 2, 4, 8]
+    assert out["base_accumulators"] == 16 and out["large_accumulators"] == 24
+    # one k outside 3 % fails the whole check, and the other k are still recorded
+    bad = rb.acc_check_all(run_with({**flat, 8: 1.038}), good_loops())
+    assert bad["pass"] is False
+    assert [k for k, c in bad["by_streams"].items() if not c["pass"]] == ["8"]
+
+
+def test_a_loop_that_spills_to_the_stack_fails_the_check_even_if_the_timing_agrees():
+    results = [acc_result(a, 12e9, k) for k in (1, 2, 4, 8) for a in (16, 24)]
+    loops = good_loops()
+    loops[-1] = rb.check_read_loop("read_slice_acc24_k8", read_loop_text("x", spill=True))
+    out = rb.acc_check_all({"threads": 1, "results": results}, loops)
+    assert all(c["pass"] for c in out["by_streams"].values()) and out["pass"] is False
+    assert out["loops"][-1]["stack_accesses"] == ["str q3, [sp, #16]", "ldr q3, [sp, #16]"]
+
+
+def test_read_loop_check_finds_the_loop_and_rejects_stack_access_and_stores():
+    ok = rb.check_read_loop("f", read_loop_text("f"))
+    assert (
+        ok["ok"] and ok["vector_loads"] == 8 and ok["stack_accesses"] == [] and ok["stores"] == []
+    )
+    assert not rb.check_read_loop("f", read_loop_text("f", spill=True))["ok"]
+    assert not rb.check_read_loop("f", read_loop_text("f", store=True))["ok"]
+    assert not rb.check_read_loop("f", "0000 <f>:\n  780:\tret\n")["ok"]  # no loop at all
+
+
+def test_the_check_covers_eight_loops_16_and_24_accumulators_at_every_k():
+    assert rb.READ_LOOP_FUNCTIONS == tuple(
+        f"read_slice_acc{a}_k{k}" for a in (16, 24) for k in (1, 2, 4, 8)
+    )
 
 
 def test_the_record_keeps_every_stream_count_and_b_of_t_is_the_best_of_them():

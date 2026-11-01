@@ -12,10 +12,11 @@
 //
 //   sdot      NEON SDOT   (vdotq_s32)            16 int8 MACs per instruction
 //   smmla     NEON SMMLA  (vmmlaq_s32)           2x8 times 8x2 int8 = 32 MACs per instruction
-//   fmla_f16  NEON FP16 FMLA (vfmaq_f16)         8 half-precision MACs per instruction
+//   fmla_f16  NEON FP16 FMLA (inline asm)        8 half-precision MACs per instruction
 //   fma32     NEON F32 FMLA (vfmaq_f32)          4 single-precision MACs per instruction; the
 //             ceiling for attention, which ggml computes in F32 (ADR-020)
-//   fmlal     SVE2 FMLALB / FMLALT (svmlalb_f32 / svmlalt_f32, as ggml's vec.h uses): FP16 inputs,
+//   fmlal     SVE2 FMLALB / FMLALT (inline asm; the svmlalb_f32 / svmlalt_f32 that ggml's vec.h
+//             uses): FP16 inputs,
 //             FP32 accumulate, 4 MACs per 128 bits per instruction; half the chains use the
 //             bottom form, half the top form
 //
@@ -49,6 +50,7 @@
 // Operand seeds come from memory the compiler cannot see through, so no loop can be folded.
 static volatile int8_t g_i8[4] = {3, -5, 7, 11};
 static volatile float g_f[4] = {0.5f, 0.25f, 1.0f, 2.0f};
+static volatile float g_zero[1] = {0.0f};
 
 // Lists of accumulator indices; a macro, not an array, because SVE vectors cannot be array
 // elements. FE<N>(M) expands to M(0) M(1) ... M(N-1).
@@ -101,19 +103,21 @@ DEFINE_SMMLA(28, FE28)
 #endif
 
 // ---- FP16 FMLA ----------------------------------------------------------------------------
-// Each chain adds x*y and then -x*y so the half-precision accumulators stay finite for any
-// number of iterations; that makes two instructions per chain per loop iteration.
+// Inline asm, one instruction per statement: GCC rewrote the vfmaq_f16 intrinsics (x and y never
+// change, so it may legally transform them) and the loop no longer held the instruction. With
+// "+w" the accumulator is both input and output, so the compiler can neither drop, merge nor
+// rewrite the instruction. y is zero, so each FMLA adds 0 and the half-precision accumulators
+// stay finite for any iteration count (the instruction does the same work whatever its operands).
 #if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
 #define HFMA_DECL(i) float16x8_t h##i = vdupq_n_f16((float16_t)0.0f);
-#define HFMA_STEP(i) h##i = vfmaq_f16(h##i, x, y); h##i = vfmaq_f16(h##i, x, ny);
+#define HFMA_STEP(i) asm volatile("fmla %0.8h, %1.8h, %2.8h" : "+w"(h##i) : "w"(x), "w"(y));
 #define HFMA_SUM(i)                                                         \
     tot = vaddq_f32(tot, vcvt_f32_f16(vget_low_f16(h##i)));                 \
     tot = vaddq_f32(tot, vcvt_high_f32_f16(h##i));
 #define DEFINE_HFMA(A, FE)                                                                  \
     extern "C" __attribute__((noinline, noclone)) uint64_t peak_fmla_f16_a##A(uint64_t iters) { \
         const float16x8_t x = vdupq_n_f16((float16_t)g_f[0]);                              \
-        const float16x8_t y = vdupq_n_f16((float16_t)g_f[1]);                              \
-        const float16x8_t ny = vnegq_f16(y);                                               \
+        const float16x8_t y = vdupq_n_f16((float16_t)g_zero[0]);                           \
         FE(HFMA_DECL)                                                                       \
         _Pragma("GCC unroll 1") for (uint64_t it = 0; it < iters; it++) { FE(HFMA_STEP) }   \
         float32x4_t tot = vdupq_n_f32(0.0f);                                                \
@@ -154,17 +158,48 @@ DEFINE_FMA32(28, FE28)
 
 // ---- SVE2 FMLALB / FMLALT ------------------------------------------------------------------
 // Even-numbered chains use FMLALB, odd-numbered ones FMLALT: one instruction per chain per loop
-// iteration, half of each kind, as ggml's decode dot product issues them.
+// iteration, half of each kind, as ggml's decode dot product issues them. Inline asm for the same
+// reason as the FP16 FMLA above (GCC rewrote the svmlalb_f32 / svmlalt_f32 intrinsics). %Z prints
+// a vector operand as an SVE register (z<n>). Each instruction adds x*y = 0.125 to its F32
+// accumulator, which stays finite for any iteration count a repetition can reach.
 #if defined(__ARM_FEATURE_SVE2)
+#define LAL_SFX_0 "b"
+#define LAL_SFX_1 "t"
+#define LAL_SFX_2 "b"
+#define LAL_SFX_3 "t"
+#define LAL_SFX_4 "b"
+#define LAL_SFX_5 "t"
+#define LAL_SFX_6 "b"
+#define LAL_SFX_7 "t"
+#define LAL_SFX_8 "b"
+#define LAL_SFX_9 "t"
+#define LAL_SFX_10 "b"
+#define LAL_SFX_11 "t"
+#define LAL_SFX_12 "b"
+#define LAL_SFX_13 "t"
+#define LAL_SFX_14 "b"
+#define LAL_SFX_15 "t"
+#define LAL_SFX_16 "b"
+#define LAL_SFX_17 "t"
+#define LAL_SFX_18 "b"
+#define LAL_SFX_19 "t"
+#define LAL_SFX_20 "b"
+#define LAL_SFX_21 "t"
+#define LAL_SFX_22 "b"
+#define LAL_SFX_23 "t"
+#define LAL_SFX_24 "b"
+#define LAL_SFX_25 "t"
+#define LAL_SFX_26 "b"
+#define LAL_SFX_27 "t"
 #define LAL_DECL(i) svfloat32_t f##i = svdup_n_f32(0.0f);
-#define LAL_STEP(i) f##i = ((i) % 2 == 0) ? svmlalb_f32(f##i, x, y) : svmlalt_f32(f##i, x, y);
+#define LAL_STEP(i) \
+    asm volatile("fmlal" LAL_SFX_##i " %Z0.s, %Z1.h, %Z2.h" : "+w"(f##i) : "w"(x), "w"(y));
 #define LAL_SUM(i) tot = svadd_f32_x(pg32, tot, f##i);
 #define DEFINE_LAL(A, FE)                                                                   \
     extern "C" __attribute__((noinline, noclone)) uint64_t peak_fmlal_a##A(uint64_t iters) { \
-        const svbool_t pg16 = svptrue_b16(), pg32 = svptrue_b32();                          \
+        const svbool_t pg32 = svptrue_b32();                                                \
         const svfloat16_t x = svdup_n_f16((float16_t)g_f[0]);                               \
         const svfloat16_t y = svdup_n_f16((float16_t)g_f[1]);                               \
-        (void)pg16;                                                                         \
         FE(LAL_DECL)                                                                        \
         _Pragma("GCC unroll 1") for (uint64_t it = 0; it < iters; it++) { FE(LAL_STEP) }    \
         svfloat32_t tot = svdup_n_f32(0.0f);                                                \
@@ -190,9 +225,9 @@ static void register_kernels() {
     g_kernels.push_back({"smmla", 28, 28, peak_smmla_a28});
 #endif
 #if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
-    g_kernels.push_back({"fmla_f16", 8, 16, peak_fmla_f16_a8});
-    g_kernels.push_back({"fmla_f16", 16, 32, peak_fmla_f16_a16});
-    g_kernels.push_back({"fmla_f16", 28, 56, peak_fmla_f16_a28});
+    g_kernels.push_back({"fmla_f16", 8, 8, peak_fmla_f16_a8});
+    g_kernels.push_back({"fmla_f16", 16, 16, peak_fmla_f16_a16});
+    g_kernels.push_back({"fmla_f16", 28, 28, peak_fmla_f16_a28});
 #endif
     g_kernels.push_back({"fma32", 8, 8, peak_fma32_a8});
     g_kernels.push_back({"fma32", 16, 16, peak_fma32_a16});

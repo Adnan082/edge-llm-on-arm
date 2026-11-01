@@ -189,16 +189,29 @@ def test_a_loop_that_touches_memory_is_not_register_only():
     assert not check["ok"] and check["memory_instructions"] == ["ldr q5, [sp, #16]"]
 
 
-def test_fp16_fmla_counts_two_per_chain_and_matches_only_the_8h_form():
-    insns = [f"fmla\tv{i}.8h, v30.8h, v31.8h" for i in range(8)] * 2
+def test_fp16_fmla_counts_one_per_chain_and_matches_only_the_8h_form():
+    insns = [f"fmla	v{i}.8h, v30.8h, v31.8h" for i in range(8)]
     insns += [
-        "fmla\tv9.4s, v30.4s, v31.4s",
-        "subs\tx0, x0, #0x1",
-        "b.ne\t788 <peak_fmla_f16_a8+0x8>",
+        "fmla	v9.4s, v30.4s, v31.4s",
+        "subs	x0, x0, #0x1",
+        "b.ne	788 <peak_fmla_f16_a8+0x8>",
     ]
     text = objdump(["nop", "nop"] + insns)
-    check = peak.check_loop("fmla_f16", loop_of(text), 8, 16)
-    assert check["counts"] == {"fmla .8h": 16} and check["ok"]
+    check = peak.check_loop("fmla_f16", loop_of(text), 8, 8)
+    assert check["counts"] == {"fmla .8h": 8} and check["ok"]
+
+
+def test_the_loops_gcc_produced_before_the_inline_asm_fix_are_rejected():
+    """VM result: 45- and 22-instruction loops with none of the expected instruction."""
+    junk = ["mov	v0.16b, v1.16b"] * 20 + ["subs	x0, x0, #0x1", "b.ne	788 <x+0x8>"]
+    text = objdump(["nop", "nop"] + junk)
+    for cls, acc in (("fmla_f16", 8), ("fmlal", 8)):
+        check = peak.check_loop(cls, loop_of(text), acc, acc)
+        assert not check["ok"] and sum(check["counts"].values()) == 0
+
+
+def test_every_class_expects_one_instruction_per_chain():
+    assert run_peak.INSTR_PER_ACC == dict.fromkeys(peak.PEAK_CLASSES, 1)
 
 
 def test_fmlal_needs_half_bottom_and_half_top():

@@ -95,18 +95,25 @@ def test_process_cpus_is_the_set_the_process_started_with():
         assert out["process_cpus"] == list(range(t))
 
 
-def test_accumulator_check_covers_k1_and_k8():
+def test_accumulator_check_covers_every_k_and_the_loops_keep_to_registers():
     run_bandwidth.ensure_binary()
     out, code = run_program(
         run_bandwidth.BINARY, "0",
-        ["--threads", "1", "--acc-check", "--streams", "1,8", "--small", "--reps", "3",
+        ["--threads", "1", "--acc-check", "--streams", "1,2,4,8", "--small", "--reps", "3",
          "--warmup", "1"],
     )  # fmt: skip
     assert code == 0
     assert sorted((r["streams"], r["acc"]) for r in out["results"]) == [
-        (k, a) for k in (1, 8) for a in (4, 8, 16)
+        (k, a) for k in (1, 2, 4, 8) for a in (16, 24)
     ]
-    assert set(run_bandwidth.acc_check_all(out)["by_streams"]) == {"1", "8"}
+    loops = [
+        run_bandwidth.check_read_loop(name, text)
+        for name, text in run_bandwidth.disassemble_read_loops().items()
+    ]
+    for loop in loops:  # 24 accumulators fit in registers: no spill, no store in any loop
+        assert loop["ok"], loop
+    checked = run_bandwidth.acc_check_all(out, loops)
+    assert set(checked["by_streams"]) == {"1", "2", "4", "8"}
 
 
 # --- llama-bench accepts the command we built ----------------------------------------------

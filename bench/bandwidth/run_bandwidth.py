@@ -13,15 +13,19 @@ The read kernel runs with k = 1, 2, 4 and 8 interleaved streams per thread (ADR-
 B(t) = the best median over k, B1(t) = the k = 1 median. As a diagnostic only, k = 1 is also run
 with transparent huge pages at t = 1 and t = 8; those points never enter B(t).
 
-Also checks that the 1-thread read result does not change when the number of independent
-accumulators is doubled (8 -> 16), at k = 1 and k = 8: if it does, the loop was limited by its
-add chain and not by memory. A failed check still writes the record, then exits non-zero.
+Also checks, at one thread and every k, that the read result does not change when the number of
+independent accumulators goes from the 16 the kernel uses to 24, the most that fit in registers
+(within 3 %): if it does, the loop was limited by its add chain and not by memory. The check also
+reads the disassembly of all eight loops (16 and 24 accumulators, four k) and requires that none
+touches the stack, so "fits in registers" is shown and not assumed. A failed check still writes
+the record, then exits non-zero.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -29,6 +33,7 @@ from pathlib import Path
 
 from bench import common
 from bench.common import REPO_ROOT, WORK_DIR
+from edge_llm import peak
 from edge_llm.bandwidth import HUGEPAGE_DIAGNOSTIC_THREADS, STREAM_COUNTS, b_of_t
 from edge_llm.schema import SCHEMA_VERSION, BandwidthRecord
 from edge_llm.stats import summarise
@@ -38,8 +43,13 @@ BINARY = WORK_DIR / "bin" / "bandwidth"
 FLAGS_FILE = WORK_DIR / "bin" / "bandwidth.flags"
 OUT_DIR = common.RESULTS_DIR / "raw" / "bandwidth"
 COMPILE_FLAGS = ["-O3", "-mcpu=native", "-std=c++17", "-fopenmp", "-Wall", "-Wextra"]
-ACC_TOLERANCE = 0.03  # doubling the accumulators may move the 1-thread result by <= 3 %
-ACC_CHECK_STREAMS = (1, 8)  # the stream counts the accumulator check covers
+BASE_ACC = 16  # accumulators the read kernel uses at every k
+LARGE_ACC = 24  # the most that fit in registers without spilling (checked in the disassembly)
+ACC_TOLERANCE = 0.03  # more accumulators may move the 1-thread result by <= 3 %
+ACC_CHECK_STREAMS = STREAM_COUNTS  # the accumulator check covers every k
+READ_LOOP_FUNCTIONS = tuple(
+    f"read_slice_acc{a}_k{k}" for a in (BASE_ACC, LARGE_ACC) for k in STREAM_COUNTS
+)
 THP_FILE = "/sys/kernel/mm/transparent_hugepage/enabled"
 STREAMS_ARG = ",".join(str(k) for k in STREAM_COUNTS)
 
@@ -107,50 +117,70 @@ def to_point(run: dict, result: dict) -> dict:
 
 
 def acc_check_summary(run: dict, streams: int = 1) -> dict:
-    """Compare the read result with 4, 8 and 16 accumulators at one stream count."""
+    """Compare the read result with 16 and 24 accumulators at one stream count."""
     med = {
         r["acc"]: summarise(r["samples_bytes_per_s"])["median"]
         for r in run["results"]
         if r.get("streams", 1) == streams
     }
-    ratio = med[16] / med[8]
+    ratio = med[LARGE_ACC] / med[BASE_ACC]
     return {
         "threads": run["threads"],
         "streams": streams,
         "median_bytes_per_s_by_accumulators": {str(k): v for k, v in sorted(med.items())},
-        "ratio_16_over_8": ratio,
+        "ratio_24_over_16": ratio,
         "tolerance": ACC_TOLERANCE,
         "pass": abs(ratio - 1.0) <= ACC_TOLERANCE,
     }
 
 
-def acc_check_all(run: dict) -> dict:
-    """The accumulator check at every stream count in the run; passes only if all do."""
+def check_read_loop(name: str, objdump_text: str) -> dict:
+    """The hot loop of one read function: found, and no stack access or store in it."""
+    loop = peak.hot_loop(peak.parse_instructions(objdump_text))
+    stack = [i for i in loop if re.search(r"\[sp[,\]]", i)]
+    stores = [i for i in loop if re.match(r"^(st\w*)\s", i)]
+    vector_loads = sum(
+        (2 if i.startswith("ldp") else 1) for i in loop if re.match(r"^(ldr|ldp|ld1)\s+q", i)
+    )
+    return {
+        "function": name,
+        "loop_instructions": len(loop),
+        "vector_loads": vector_loads,
+        "stack_accesses": stack,
+        "stores": stores,
+        "ok": bool(loop) and not stack and not stores,
+    }
+
+
+def acc_check_all(run: dict, loops: list[dict]) -> dict:
+    """The accumulator check at every stream count in the run, and the loop checks.
+
+    Passes only if every k is within the tolerance and no loop touches the stack.
+    """
     present = sorted({r.get("streams", 1) for r in run["results"]})
     by_k = {str(k): acc_check_summary(run, k) for k in present}
     return {
         "threads": run["threads"],
+        "base_accumulators": BASE_ACC,
+        "large_accumulators": LARGE_ACC,
         "by_streams": by_k,
-        "ratio_16_over_8": by_k["1"]["ratio_16_over_8"],
+        "loops": loops,
         "tolerance": ACC_TOLERANCE,
-        "pass": all(c["pass"] for c in by_k.values()),
+        "pass": all(c["pass"] for c in by_k.values()) and all(lp["ok"] for lp in loops),
     }
 
 
-def objdump_read_loop() -> str:
-    out = common.run(
-        [
-            "objdump",
-            "-d",
-            "-C",
-            "--no-show-raw-insn",
-            "--disassemble=read_slice_acc8_k1",
-            str(BINARY),
-        ],
-        timeout=60,
-        strip=False,
-    )
-    return out or "objdump failed or unavailable\n"
+def disassemble_read_loops() -> dict[str, str]:
+    """objdump of every read function: {name: text}."""
+    out = {}
+    for name in READ_LOOP_FUNCTIONS:
+        text = common.run(
+            ["objdump", "-d", "-C", "--no-show-raw-insn", f"--disassemble={name}", str(BINARY)],
+            timeout=60,
+            strip=False,
+        )
+        out[name] = text or "objdump failed or unavailable\n"
+    return out
 
 
 def thread_counts() -> list[int]:
@@ -210,7 +240,10 @@ def main() -> int:
             failed = failed or run["returncode"] != 0
             points += [to_point(run, r) for r in run["results"]]
     acc_streams = ",".join(str(k) for k in ACC_CHECK_STREAMS)
-    acc = acc_check_all(run_once(1, ["--acc-check", "--streams", acc_streams, *extra]))
+    acc_run = run_once(1, ["--acc-check", "--streams", acc_streams, *extra])
+    disassembly = disassemble_read_loops()
+    loops = [check_read_loop(name, text) for name, text in disassembly.items()]
+    acc = acc_check_all(acc_run, loops)
     loadavg_after = common.loadavg()
 
     record = {
@@ -238,15 +271,24 @@ def main() -> int:
     validated = BandwidthRecord.from_dict(record)  # raises on a bad checksum, pin check or count
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    objdump_path.write_text(objdump_read_loop())
+    objdump_path.write_text(
+        "\n".join(f"# ===== {name} =====\n{text}" for name, text in disassembly.items())
+    )
     common.write_new_json(record_path, record)
     print(f"wrote {record_path} and {objdump_path.name}")
 
     print_table(validated, threads)
     for k, c in acc["by_streams"].items():
         print(
-            f"accumulator check (1 thread, k={k}, 16 vs 8): ratio {c['ratio_16_over_8']:.3f}",
+            f"accumulator check (1 thread, k={k}, {LARGE_ACC} vs {BASE_ACC}): "
+            f"ratio {c['ratio_24_over_16']:.3f}",
             "PASS" if c["pass"] else "FAIL",
+        )
+    for lp in loops:
+        print(
+            f"  {lp['function']:<20} loop {lp['loop_instructions']:>4} insns, "
+            f"{lp['vector_loads']:>3} vector loads, {len(lp['stack_accesses'])} stack accesses, "
+            f"{len(lp['stores'])} stores: {'ok' if lp['ok'] else 'FAILED'}"
         )
     if not acc["pass"]:
         print(
