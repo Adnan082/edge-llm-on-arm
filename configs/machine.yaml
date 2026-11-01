@@ -1,8 +1,9 @@
 # Machine facts (CLAUDE.md §5, §11). TBD = not yet read from the VM / price page.
 machine_type: c4a-highcpu-8
 region: us-central1
-zone: TBD
+zone: us-central1-b   # results/raw/env/2026-10-31T2015Z.json
 on_demand_price_usd_per_hour: TBD
 price_date: TBD
 # One entry per sitting: {date: YYYY-MM-DD, hours: <float>, note: <str>}
-vm_hours: []
+vm_hours:
+  - {date: 2026-10-31, hours: 0.5, note: "first sitting (Day 1); owner-reported, about half an hour"}

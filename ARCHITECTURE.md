@@ -4,9 +4,10 @@
 > one step to the next, and the rules that keep the results honest. The spec (`CLAUDE.md`)
 > says *what* we measure and *why*; this file says *how* the code is arranged to do it.
 >
-> **Status: Day 1 skeleton.** Only `infra/setup_vm.sh`, `bench/env_capture.py`, `make env`,
-> `make test` and `make lint` do anything; every other program is a placeholder. When code
-> changes the design, update this file in the same commit.
+> **Status: Day 2.** Set-up (`env`, `build`, `models`, `check-builds`), `make bandwidth`,
+> `make test` and `make lint` exist; `peak`, `predict`, `bench`, `analyse`, `figures` and
+> `micro` are still placeholders. When code changes the design, update this file in the same
+> commit.
 
 ---
 
@@ -20,8 +21,11 @@ program, what it produces, and where the result is saved.
     infra/setup_vm.sh       ──► tools, llama.cpp clone     → work/llama.cpp/
     bench/env_capture.py    ──► machine details            → results/raw/env/
     infra/build_llamacpp.sh ──► baseline + kleidiai builds → work/build-*/
-    infra/make_models.sh    ──► F16 → Q8_0, Q4_0, Q4_K_M   → work/models/
+                                build record, flags        → results/raw/build/
+    infra/make_models.sh    ──► HF → F16 → Q8_0, Q4_0, Q4_K_M → work/models/
     edge_llm/gguf_table.py  ──► model sizes, per tensor    → results/models/
+    bench/check_builds.py   ──► is KleidiAI active? which buffer holds which
+                                weights (smoke runs)       → results/raw/build/
                  │
                  ▼
  1. MEASURE THE CHIP  (VM)
@@ -68,20 +72,35 @@ live in `work/`, which is gitignored.
 On a fresh VM, run `bash infra/setup_vm.sh` by hand first: it installs `make`,
 the compilers and Python, and clones llama.cpp at the pinned commit into `work/`. Then:
 
-- `make env` — `bench/env_capture.py` saves the machine's details. It also runs
+- `make env` — `bench/env_capture.py` saves the machine's details and **starts the session**:
+  it writes the new `session_id` to `work/session_id`, and every later step of the same
+  sitting (`bandwidth`, `build`, `check-builds`, the sweep) reuses it. It also runs
   automatically at the start of every sweep session.
 - `make build` — `infra/build_llamacpp.sh` builds llama.cpp twice from the same commit,
-  `baseline` and `kleidiai`, and records the flags and commit.
-- `make models` — `infra/make_models.sh` gets one F16 GGUF per model size, makes every
-  format listed in `sweep.yaml` with `llama-quantize`, and records each file's SHA256.
-  Then `gguf_table.py` writes each file's shape numbers and per-tensor sizes to
-  `results/models/`. From here on, nothing downstream needs the model files.
+  `baseline` and `kleidiai`; the only difference is `-DGGML_CPU_KLEIDIAI=ON`. It stops if the
+  two CMake caches differ in anything else, and `bench/build_record.py` writes the build
+  record (commit, CMake options, the real compiler flags from `compile_commands.json`,
+  KleidiAI version/URL/hash, the KleidiAI lines of the configure log). Only `llama-bench`,
+  `llama-quantize` and `llama-completion` are built.
+- `make models` — `infra/make_models.sh` downloads each model's safetensors at the pinned
+  revision (`infra/hf_fetch.py` checks every file against the Hub's hashes), converts to F16
+  in its own venv, makes every other format listed in `sweep.yaml` with `llama-quantize`
+  (default settings), and records each file's SHA256 in `work/models/SHA256SUMS`. Each model
+  file has a `.cmd` sidecar with the command that made it. Then `gguf_table.py` writes each
+  file's shape numbers and per-tensor sizes to `results/models/`. From here on, nothing
+  downstream needs the model files.
+- `make check-builds` — `bench/check_builds.py` runs a tiny llama-bench (smoke run) of every
+  model file on both builds and records which buffer type (`CPU_KLEIDIAI`, `CPU_REPACK`,
+  `CPU_Mapped`) holds how many MiB, plus each build's system-info line from
+  `llama-completion` (llama-bench does not print one). Smoke records say
+  `use_for_analysis: false`; their speeds are never used.
 
 ### Step 1 — Measure the chip (VM)
 
-- `make bandwidth` — measures memory speed `B(t)` at every thread count with a read-only
-  kernel (the roofline input) and STREAM triad (for comparison). Sweep sessions also run
-  it at their start and end, so drift is visible.
+- `make bandwidth PHASE=start|end` — `bench/bandwidth/` measures memory speed `B(t)` at every
+  thread count with a read-only kernel (the roofline input) and a STREAM-style triad (for
+  comparison). Each thread count runs under `taskset -c 0-(t-1)` with thread i pinned to
+  core i. Sweep sessions run it at their start and end, so drift is visible.
 - `make peak` — `micro/peak.cpp` measures maths speed `C(t)` at every thread count for
   each instruction class: `SDOT`, `SMMLA`, FP `FMA`.
 
@@ -140,11 +159,19 @@ Exact fields are defined in `src/edge_llm/schema.py`; this is the overview.
 
 - `results/models/<model>_<quant>.json` — from `gguf_table.py`, read by `roofline.py`.
   One per model file: SHA256; number of layers, heads and KV heads; head size; vocabulary
-  size; whether embeddings are tied; and for every tensor its name, type, shape, parameter
-  count, bytes and role (`blk`, `out` or `emb`).
+  size; whether embeddings are tied; for every tensor its name, type, shape, parameter
+  count, bytes and role; totals per role (`W_blk`, `N_blk`, `W_out`, `N_out`, ...); the mix
+  of tensor types; and the source (Hugging Face revision, the commands used). The role is
+  `blk` (matmul weights inside `blk.*`), `out` (the output projection: `output.weight`, or
+  the token-embedding table when embeddings are tied), `emb` (an untied embedding table) or
+  `other` (1-D norm vectors and `rope_freqs`; under 1 % of the bytes, kept in `W_other` so
+  that can be checked). `results/models/convert_pip_freeze.txt` pins the converter's packages.
 - `results/raw/bandwidth/<session_id>_<start|end>.json` — from `bench/bandwidth/`, read by
   `roofline.py` and `analyse.py`. One pass over every thread count: kernel, buffer size,
-  pinning, samples in GB/s.
+  pinning (and the `sched_getcpu()` check), at least 20 samples in bytes/s with median, IQR
+  and max, compile flags, load average before/after. Next to it, `..._read_loop.s` is the
+  disassembly of the read loop; the record also holds the accumulator check (the 1-thread
+  result must not change when the independent accumulators are doubled).
 - `results/raw/peak/<session_id>.json` — from `micro/peak.cpp`, read by `roofline.py`.
   Instruction class, threads, samples in operations/s.
 
@@ -157,7 +184,12 @@ Exact fields are defined in `src/edge_llm/schema.py`; this is the overview.
 **Measurements**
 
 - `results/raw/env/<session_id>.json` — from `env_capture.py`. Everything listed in spec
-  §7, item 1.
+  §7, item 1. `dirty` in this and every other record counts only changes outside `results/`
+  (one helper, `bench/common.py: git_state`), so adding result files does not make later
+  records look dirty.
+- `results/raw/build/<session_id>_build.json` — from `bench/build_record.py` (`make build`).
+- `results/raw/build/<session_id>_check_builds.json` — from `bench/check_builds.py`. Smoke
+  runs of both builds; **not** read by `analyse.py`.
 - `results/raw/bench/<session_id>/<config_id>.json` — from `run_sweep.py`, read by
   `analyse.py`. llama-bench's own JSON output, stored unchanged, plus session, repo
   commit, model SHA256, pinning, and load average before and after.
@@ -201,9 +233,10 @@ On a fresh VM, run `bash infra/setup_vm.sh` once before any target.
 | Target | Runs | Where | Writes |
 |---|---|---|---|
 | `make env` | `bench/env_capture.py` | VM | `results/raw/env/` |
-| `make build` | `infra/build_llamacpp.sh` | VM | `work/build-*/` |
-| `make models` | `infra/make_models.sh`, then `gguf_table.py` | VM | `work/models/`, `results/models/` |
-| `make bandwidth` | `bench/bandwidth/` | VM | `results/raw/bandwidth/` |
+| `make build` | `infra/build_llamacpp.sh` | VM | `work/build-*/`, `results/raw/build/` |
+| `make models` | `infra/make_models.sh`, then `gguf_table.py` | VM | `work/models/`, `work/hf/`, `results/models/` |
+| `make bandwidth PHASE=start` (or `end`) | `bench/bandwidth/` | VM | `results/raw/bandwidth/` |
+| `make check-builds` | `bench/check_builds.py` | VM | `results/raw/build/` |
 | `make peak` | `micro/peak.cpp` | VM | `results/raw/peak/` |
 | `make predict` | `roofline.py` | anywhere | `results/predictions/` |
 | `make bench` | `bench/run_sweep.py` → llama-bench | VM | `results/raw/bench/` |
@@ -214,12 +247,15 @@ On a fresh VM, run `bash infra/setup_vm.sh` once before any target.
 
 ## 7. Tests: what runs where
 
-- **CI, on every push:** `ruff` + `black`, then `pytest` over `src/edge_llm/`: roofline
-  known-answer tests (spec §8), tensor-table parsing on a tiny GGUF written by the test,
-  schema validation, median/IQR on synthetic data, and the rule-3 check.
-- **On the VM, `pytest -m hardware`:** every SIMD variant gives the same integer
-  result as scalar on random inputs; a llama-bench smoke run on both builds; the KleidiAI
-  activation check.
+- **CI, on every push:** `ruff` + `black`, then `pytest`: tensor-table parsing on a tiny GGUF
+  written by the test (bytes checked against the ggml block sizes for Q4_0, Q8_0, Q4_K, Q6_K,
+  F16, F32; roles; tied embeddings), schema validation of the Day 2 records, median/IQR on
+  synthetic data, the dirty check, parsing of llama.cpp's log lines and CMake caches. Day 4
+  adds the roofline known-answer tests (spec §8) and the rule-3 check.
+- **On the VM, `pytest -m hardware`:** the bandwidth kernels reproduce their known checksums
+  on the right cores; both builds exist; `KLEIDIAI` appears only in the kleidiai build's
+  system-info line. Day 7 adds: every SIMD variant gives the same integer result as scalar
+  on random inputs.
 
 ## 8. Following one data point
 

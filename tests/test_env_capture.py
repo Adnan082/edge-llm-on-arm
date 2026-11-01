@@ -1,10 +1,11 @@
 """env_capture: parsing helpers on synthetic text, plus one hardware check for the VM."""
 
+import json
 from datetime import UTC, datetime
 
 import pytest
 
-from bench import env_capture
+from bench import common, env_capture
 
 CPUINFO = """processor\t: 0
 BogoMIPS\t: 2000.00
@@ -85,7 +86,18 @@ def test_capture_has_every_item_the_spec_requires():
     assert record["cpu"]["governor"]  # a value or the literal "not exposed", never empty
 
 
+def test_cmake_cache_keys_match_the_pinned_commit():
+    # GGML_CPU_AARCH64 was renamed GGML_CPU_REPACK; LLAMA_CURL is deprecated (ggml/CMakeLists.txt,
+    # CMakeLists.txt at ddf48f8).
+    assert "GGML_CPU_REPACK" in env_capture.CACHE_KEYS
+    assert "GGML_CPU_AARCH64" not in env_capture.CACHE_KEYS
+    assert "LLAMA_CURL" not in env_capture.CACHE_KEYS
+    cache = "GGML_CPU_REPACK:BOOL=ON\nGGML_CPU_AARCH64:BOOL=ON\n"
+    assert env_capture.parse_cmake_cache(cache) == {"GGML_CPU_REPACK": "ON"}
+
+
 def test_main_refuses_to_overwrite_a_raw_record(tmp_path, monkeypatch):
+    monkeypatch.setattr(common, "SESSION_FILE", tmp_path / "work" / "session_id")
     monkeypatch.setattr(
         "sys.argv",
         ["env_capture", "--session-id", "S", "--out-dir", str(tmp_path)],
@@ -93,6 +105,38 @@ def test_main_refuses_to_overwrite_a_raw_record(tmp_path, monkeypatch):
     assert env_capture.main() == 0
     assert (tmp_path / "S.json").exists()
     assert env_capture.main() == 1  # second run must not touch the first file
+
+
+def test_start_saves_the_session_id_and_end_reuses_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(common, "SESSION_FILE", tmp_path / "work" / "session_id")
+    out = ["--out-dir", str(tmp_path)]
+    monkeypatch.setattr("sys.argv", ["env_capture", *out])
+    assert env_capture.main() == 0
+    sid = common.current_session_id()
+    assert (tmp_path / f"{sid}.json").exists()
+
+    monkeypatch.setattr("sys.argv", ["env_capture", "--phase", "end", *out])
+    assert env_capture.main() == 0
+    assert (tmp_path / f"{sid}_end.json").exists()  # same session, no new id invented
+    assert json.loads((tmp_path / f"{sid}_end.json").read_text())["session_id"] == sid
+
+
+def test_record_dirty_flag_ignores_results_but_not_code():
+    # The helper every recorder uses (bench.common.git_state) drives the record's `dirty`.
+    assert env_capture.git_state is common.git_state
+    assert common.is_dirty("?? results/raw/env/x.json\n") is False
+    assert common.is_dirty(" M bench/env_capture.py\n") is True
+
+
+def test_system_info_line_comes_from_the_newest_check_builds_record(tmp_path):
+    def rec(line):
+        return json.dumps({"builds": {"kleidiai": {"system_info_line": line}}})
+
+    (tmp_path / "2026-11-02T0900Z_check_builds.json").write_text(rec("old"))
+    (tmp_path / "2026-11-03T0900Z_check_builds.json").write_text(rec("new"))
+    assert env_capture.latest_system_info("kleidiai", tmp_path) == "new"
+    assert env_capture.latest_system_info("baseline", tmp_path) is None
+    assert env_capture.latest_system_info("kleidiai", tmp_path / "missing") is None
 
 
 @pytest.mark.hardware

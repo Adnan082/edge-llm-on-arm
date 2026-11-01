@@ -4,7 +4,10 @@ Writes results/raw/env/<session_id>.json. Standard library only, so it runs on a
 before any pip install. Every probe is best-effort: a missing tool or file is recorded as
 null (or "not exposed" for the CPU governor) with a note, never guessed and never fatal.
 
-Run on the Arm VM:  python3 bench/env_capture.py   (or: make env)
+Run on the Arm VM, from the repo root:  python3 -m bench.env_capture   (or: make env)
+
+A `start` capture also saves the session id in work/session_id; every later step of the same
+VM sitting (bandwidth, build record, smoke runs, sweep) reuses it.
 """
 
 from __future__ import annotations
@@ -16,35 +19,44 @@ import os
 import platform
 import re
 import shutil
-import subprocess
 import sys
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-WORK_DIR = REPO_ROOT / "work"
-LLAMACPP_DIR = WORK_DIR / "llama.cpp"
-MODELS_DIR = WORK_DIR / "models"
+from bench import common
+from bench.common import (
+    LLAMACPP_DIR,
+    MODELS_DIR,
+    REPO_ROOT,
+    WORK_DIR,
+    git_state,
+    read_text,
+    run,
+)
 
 # CPU feature flags the spec cares about (§5, §11). Names are as /proc/cpuinfo prints them.
 KEY_FLAGS = ("asimd", "asimddp", "asimdhp", "bf16", "i8mm", "sve", "sve2", "sme", "sme2")
 
-# llama.cpp CMake options worth recording from each build's CMakeCache.txt.
+# llama.cpp CMake options worth recording from each build's CMakeCache.txt. Every GGML_/LLAMA_
+# name was checked against ggml/CMakeLists.txt and CMakeLists.txt at the pinned commit:
+# GGML_CPU_REPACK replaced the old GGML_CPU_AARCH64, and LLAMA_CURL is deprecated (HTTPS
+# model download is now LLAMA_OPENSSL).
 CACHE_KEYS = (
     "CMAKE_BUILD_TYPE",
+    "CMAKE_EXPORT_COMPILE_COMMANDS",
     "CMAKE_C_COMPILER",
     "CMAKE_CXX_COMPILER",
     "CMAKE_C_FLAGS",
     "CMAKE_CXX_FLAGS",
     "GGML_NATIVE",
     "GGML_CPU_KLEIDIAI",
-    "GGML_CPU_AARCH64",
+    "GGML_CPU_REPACK",
     "GGML_CPU_ARM_ARCH",
     "GGML_LLAMAFILE",
     "GGML_OPENMP",
     "GGML_CCACHE",
-    "LLAMA_CURL",
+    "LLAMA_OPENSSL",
 )
 
 PR_SVE_GET_VL = 51  # linux/prctl.h
@@ -56,26 +68,6 @@ def make_session_id(now: datetime | None = None) -> str:
     """UTC start time, `YYYY-MM-DDTHHMMZ` (ARCHITECTURE.md §3)."""
     now = now or datetime.now(UTC)
     return now.astimezone(UTC).strftime("%Y-%m-%dT%H%MZ")
-
-
-def run(cmd: list[str], cwd: Path | None = None, timeout: int = 30) -> str | None:
-    """Return stdout+stderr of a command, or None if it is missing or fails."""
-    try:
-        proc = subprocess.run(
-            cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, check=False
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if proc.returncode != 0:
-        return None
-    return (proc.stdout + proc.stderr).strip()
-
-
-def read_text(path: str | Path) -> str | None:
-    try:
-        return Path(path).read_text().strip()
-    except OSError:
-        return None
 
 
 # --- machine identity -------------------------------------------------------------------
@@ -209,17 +201,6 @@ def compilers() -> dict:
 # --- llama.cpp, builds, models -----------------------------------------------------------
 
 
-def git_state(repo: Path) -> dict:
-    """Commit and cleanliness of a git checkout; all null if it is not one."""
-    if not (repo / ".git").exists():
-        return {"commit": None, "dirty": None}
-    status = run(["git", "status", "--porcelain"], cwd=repo)
-    return {
-        "commit": run(["git", "rev-parse", "HEAD"], cwd=repo),
-        "dirty": None if status is None else bool(status),
-    }
-
-
 def parse_cmake_cache(text: str, keys: tuple[str, ...] = CACHE_KEYS) -> dict[str, str]:
     """Pick `KEY:TYPE=value` entries out of a CMakeCache.txt."""
     wanted = set(keys)
@@ -234,24 +215,39 @@ def parse_cmake_cache(text: str, keys: tuple[str, ...] = CACHE_KEYS) -> dict[str
     return found
 
 
+def latest_system_info(build_name: str, record_dir: Path | None = None) -> str | None:
+    """The build's system-info line, from the newest `make check-builds` record.
+
+    llama-bench never prints that line, so `bench/check_builds.py` gets it from llama-completion
+    and stores it; null here means check-builds has not been run yet.
+    """
+    record_dir = record_dir or common.RESULTS_DIR / "raw" / "build"
+    for path in sorted(record_dir.glob("*_check_builds*.json"), reverse=True):
+        try:
+            record = json.loads(path.read_text())
+            line = record["builds"][build_name]["system_info_line"]
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if line:
+            return line
+    return None
+
+
 def builds_info() -> dict:
     """One entry per work/build-* directory: flags from CMakeCache, `--version` output."""
     builds: dict = {}
     for build in sorted(WORK_DIR.glob("build-*")):
+        name = build.name.removeprefix("build-")
         cache = read_text(build / "CMakeCache.txt")
-        cli = build / "bin" / "llama-cli"
-        version_out = run([str(cli), "--version"]) if cli.exists() else None
-        # The "system_info" line (CPU features the build uses) is also printed when a model
-        # is loaded; pick it up here if --version shows it, otherwise it stays null.
-        system_info = None
-        for line in (version_out or "").splitlines():
-            if "system_info" in line or line.strip().startswith("CPU :"):
-                system_info = line.strip()
-        builds[build.name.removeprefix("build-")] = {
+        # llama-completion is built by infra/build_llamacpp.sh; llama-cli is not (it pulls in
+        # the whole server). `--version` is a common argument and exits 0.
+        exe = build / "bin" / "llama-completion"
+        version_out = run([str(exe), "--version"]) if exe.exists() else None
+        builds[name] = {
             "dir": str(build.relative_to(REPO_ROOT)),
             "cmake_flags": parse_cmake_cache(cache) if cache else None,
             "version_output": version_out,
-            "system_info_line": system_info,
+            "system_info_line": latest_system_info(name),
         }
     return builds
 
@@ -298,16 +294,19 @@ def capture(session_id: str, phase: str) -> dict:
         "memory": memory_info(),
         "compilers": compilers(),
         "repo": git_state(REPO_ROOT),
-        "llama_cpp": git_state(LLAMACPP_DIR),
+        "llama_cpp": git_state(LLAMACPP_DIR, ignore_prefixes=()),
         "builds": builds_info(),
         "model_sha256": model_hashes(),
-        "loadavg_1_5_15": list(os.getloadavg()) if hasattr(os, "getloadavg") else None,
+        "loadavg_1_5_15": common.loadavg(),
     }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--session-id", help="reuse an existing session id (default: now, UTC)")
+    parser.add_argument(
+        "--session-id",
+        help="use this session id (default: a new one at `start`, the saved one at `end`)",
+    )
     parser.add_argument(
         "--phase",
         choices=("start", "end"),
@@ -317,7 +316,12 @@ def main() -> int:
     parser.add_argument("--out-dir", type=Path, default=REPO_ROOT / "results" / "raw" / "env")
     args = parser.parse_args()
 
-    session_id = args.session_id or make_session_id()
+    if args.session_id:
+        session_id = args.session_id
+    elif args.phase == "start":
+        session_id = make_session_id()
+    else:
+        session_id = common.current_session_id()
     suffix = "" if args.phase == "start" else "_end"
     out_path = args.out_dir / f"{session_id}{suffix}.json"
     if out_path.exists():
@@ -329,11 +333,15 @@ def main() -> int:
     args.out_dir.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(record, indent=2) + "\n")
     print(f"wrote {out_path}")
+    if args.phase == "start":
+        common.save_session_id(session_id)
+        print(f"session id {session_id} saved to {common.SESSION_FILE}")
 
     flags = record["cpu"]["key_flags"]
     print("key CPU flags:", ", ".join(f"{k}={'yes' if v else 'no'}" for k, v in flags.items()))
     print("threads per core:", record["cpu"]["threads_per_core"])
     print("SVE vector length (bits):", record["sve_vector_length"])
+    print("repo:", record["repo"])
     return 0
 
 
