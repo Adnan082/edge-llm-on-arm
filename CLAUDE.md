@@ -269,7 +269,10 @@ never from measured throughput. Count one multiply-accumulate as 2 operations ev
 
 - `B(t)`: memory bandwidth at `t` threads from a **read-only** kernel (a vectorised sum over
   a buffer ≥ 4× the last-level cache), because decode reads weights and writes almost
-  nothing. STREAM triad is also measured and reported for comparability; it is not a
+  nothing. Each thread reads `k` interleaved streams, k ∈ {1, 2, 4, 8}; `B(t)` is the best
+  median over `k` (the real ceiling), and the one-stream result `B₁(t)` is kept as the
+  reference for simple sequential access (ADR-017). The record used is named in
+  `v1.meta.json`. STREAM triad is also measured and reported for comparability; it is not a
   roofline input.
 - `C(t)`: peak throughput at `t` threads from `micro/peak.cpp`, per instruction class:
   `C_sdot`, `C_smmla`, and two for F16, because ggml's F16 path uses different instructions
@@ -415,7 +418,8 @@ everything else. If behind by end of Day 7: cut the microbenchmark to scalar vs 
   Source: as above.
 - llama-bench defaults at the pinned commit (Day 2 source reading, `llama-bench.cpp:389-423`,
   `:2415-2437`): `n_batch` 2048, `n_ubatch` 512, KV cache F16, flash attention `auto`,
-  5 repetitions, one warm-up run. Values fixed for the sweep (incl. mmap): `TBD` (Day 3).
+  5 repetitions, one warm-up run. The sweep uses these defaults, written out on every
+  command line (ADR-019); the flash-attention value and the mmap default: `TBD` (Day 3).
 - Models: `small` = `Qwen/Qwen3-0.6B` @ `c1899de289a04d12100db370d81485cdf75e47ca`, `large` =
   `Qwen/Qwen3-1.7B` @ `70d244cc86ccca08cf5af4e1e306ecf908b1ad5e` (BF16 safetensors, every
   file checked against the Hub's hashes). F16 made with the pinned `convert_hf_to_gguf.py`;
@@ -482,9 +486,7 @@ everything else. If behind by end of Day 7: cut the microbenchmark to scalar vs 
 2. **Model family and sizes** — decided: Qwen3 0.6B + 1.7B (ADR-009). Embeddings are untied
    in the GGUFs (§11).
 3. **Quantisation mix** — decided: `llama-quantize` default (ADR-010).
-4. **Decode at depth** — decide before Day 4. Decode only from an empty context (KV term
-   untested), or also at one depth (e.g. 2048, via llama-bench's depth option — verify) to
-   test the KV-cache term.
+4. **Decode at depth** — decided: also at depth 2048, at t ∈ {1, 8} (ADR-018).
 
 ## 15. Decision Log
 
@@ -506,6 +508,9 @@ everything else. If behind by end of Day 7: cut the microbenchmark to scalar vs 
 | ADR-014 | 2026-11-01 | Thread pinning for every measured program: thread i on core i, cores 0…t−1. The process runs under `taskset -c 0-(t-1)` and each thread is pinned inside the program (bandwidth kernel: `pthread_setaffinity_np`; llama-bench from Day 3: `--cpu-mask` + `--cpu-strict 1`) | `B(t)` and the sweep must use the same placement (§7.5). At the pinned commit ggml pins each OpenMP thread only when t > 1 (`ggml-cpu.c:3438-3462`), so `taskset` covers t = 1 | Unpinned threads (placement unknown, noisier); `OMP_PROC_BIND`/`OMP_PLACES` (would fight ggml's own per-thread pinning) |
 | ADR-015 | 2026-11-01 | F16 gets two compute peaks in §8, replacing `C_fma`: `C_hfma` (FP16 `FMLA`) for prefill and `C_fmlal` (widening FP16→FP32 `FMLALB`/`FMLALT`) for decode | Checked in the pinned source: F16 prefill runs llamafile's tinyBLAS with `vfmaq_f16` (`sgemm.cpp`), and F16 decode (fewer than 8 rows) falls back to `ggml_vec_dot_f16`, whose SVE2 path uses `svmlalb`/`svmlalt` (`vec.h`). Settled before the pilot, as §8 asked ("check the source") | One FP peak for both phases (the wrong ceiling for one of them) |
 | ADR-016 | 2026-11-01 | Roofline v1 takes bytes from the file's tensor table for both builds, so it predicts the same speed for `baseline` and `kleidiai`; KleidiAI's load-time conversions are a named gap source, not part of v1 | One ceiling per point means any build difference is the kernels' doing. The conversion is measured (§11: +28 to +91 MiB) and can explain part of a KleidiAI decode change | Per-build bytes from the load log (it reports allocation sizes, which need not equal the bytes a kernel reads) |
+| ADR-017 | 2026-11-01 | `B(t)` = the best median over 1, 2, 4 and 8 interleaved read streams per thread; the one-stream result `B₁(t)` is kept as a reference | Day 2 surprise: a STREAM-style triad moved more data than the one-stream read test (41 vs 27 GB/s at 1 thread; 234 vs 173 at 8), so one stream per core does not reach the memory limit, and a ceiling below what llama.cpp can reach would push ratios above 1. If llama.cpp only reaches `B₁(t)`, that gap is itself a finding | Keep the one-stream number (probably not the ceiling); use the triad (it also writes, while decode only reads) |
+| ADR-018 | 2026-11-01 | Decode is also measured at a context depth of 2048 tokens (llama-bench's depth option; verify), at t ∈ {1, 8}, for every model, format and build; closes §14 item 4 | With an F16 KV cache, depth 2048 adds `KV(c)` = 224 MiB per token for both models (2048 × 28 layers × 2 × 8 KV heads × 128 × 2 B), about 63 % of the small Q4_0 model's weight bytes, so it tests the KV term that empty-context decode cannot | Empty context only (KV term untested); every thread count (twice the cost for little extra information) |
+| ADR-019 | 2026-11-01 | Fixed llama-bench settings = its defaults at the pinned commit (§11), written out on every command line; flash attention fixed to the value `auto` resolves to on this CPU (from the source, before the pilot) | Defaults are what users run; spelling them out stops a different llama-bench version, or `auto`, from changing them silently | Tuned settings (would answer a different question) |
 
 ## 16. Progress Log
 
@@ -540,3 +545,7 @@ everything else. If behind by end of Day 7: cut the microbenchmark to scalar vs 
   so one read stream per core does not reach the memory limit; `B(t)` is settled on Day 3,
   before the pilot. Known issue: one VM test fails on a reporting bug (`process_cpus`), not
   on the data. Next: Day 3.
+- 2026-11-01 — Before the Day-3 pilot: `B(t)` defined as the best of 1–8 read streams per
+  thread (ADR-017); decode also at depth 2048 (ADR-018, closes §14); llama-bench defaults
+  written out explicitly (ADR-019). §8 is final once Day 3's source checks (attention mask,
+  `n_logits`, flash attention) are recorded. Next: Day 3.
