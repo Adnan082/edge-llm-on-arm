@@ -125,15 +125,17 @@ plus the evidence. Null results are results.
   core).
 - **Inference engine:** llama.cpp, two builds from the **same pinned commit**:
   - `baseline` — the default CPU build. This is *not* unoptimised: ggml's CPU backend
-    already has NEON / dotprod / i8mm kernels and repacks Q4_0 weights at load time
-    (verify, and record in §11 which of these paths are active).
-  - `kleidiai` — the same build with KleidiAI enabled (expected flag
-    `-DGGML_CPU_KLEIDIAI=ON`; verify against the docs at the pinned commit).
+    already has NEON / dotprod / i8mm kernels, and on this CPU it repacks Q4_0, Q4_K, Q6_K
+    and Q8_0 weights at load time (verified; §11).
+  - `kleidiai` — the same build with `-DGGML_CPU_KLEIDIAI=ON` (verified at the pinned
+    commit; §11).
 
-  RQ3 therefore measures KleidiAI *against ggml's own Arm kernels*. Record which tensor
-  types KleidiAI handles at the pinned commit (expected: Q4_0, possibly Q8_0 — verify).
-  Formats it does not handle are a built-in **negative control**: they should show ~1.0×,
-  and a speed-up there means something other than KleidiAI differs between the builds.
+  RQ3 therefore measures KleidiAI *against ggml's own Arm kernels*. At the pinned commit, on
+  this CPU (no SME), KleidiAI takes Q4_0, Q8_0 (re-quantised per row at load) and Q6_K
+  (converted to 8-bit at load); its Q4_K and F16 kernels need SME2, so those formats stay on
+  ggml's kernels (§11, ADR-013). **F16 is the negative control**: it should show ~1.0×, and a
+  speed-up there means something other than KleidiAI differs between the builds. Q4_K_M is a
+  **partial** case: only its Q6_K tensors move to KleidiAI.
 - **Models:** Qwen3 0.6B and Qwen3 1.7B from Hugging Face (`Qwen/Qwen3-0.6B`,
   `Qwen/Qwen3-1.7B`; ADR-009). Start from one F16 GGUF per size (converted with the pinned
   commit's tools, or an official F16 GGUF) and produce every other format locally with
@@ -150,15 +152,16 @@ plus the evidence. Null results are results.
   every thread count in the sweep (§8).
 - **Roofline model** in Python; v1 predictions committed before the full sweep starts.
 - **C++ microbenchmarks:**
-  - `peak.cpp` — register-only loops of independent `SDOT` / `SMMLA` / FP `FMLA`
-    instructions; gives `C(t)` for the roofline.
+  - `peak.cpp` — register-only loops of independent `SDOT` / `SMMLA` / FP16 `FMLA` /
+    widening FP16→FP32 `FMLALB`+`FMLALT` instructions; gives `C(t)` for the roofline
+    (ADR-015).
   - `dot_int8.cpp` — int8 dot product in five variants: scalar (auto-vectorisation off),
     compiler auto-vectorised, NEON `SDOT`, i8mm `SMMLA` on a 2-row tile (`SMMLA` needs at
     least two rows, which is why it suits prefill rather than decode), and SVE. Each is
     timed with an L1-resident and a DRAM-resident working set.
   - SVE width: Neoverse V2 is expected to have 128-bit SVE — the same width as NEON, so SVE
-    should not win on width here (Neoverse V1, e.g. AWS Graviton3, has 256-bit). Verify on
-    the machine.
+    should not win on width here (Neoverse V1, e.g. AWS Graviton3, has 256-bit). Verified
+    on the machine: 128 bits (§11).
 - **Report:** README headline + `report/REPORT.md` (≤ 4 pages equivalent).
 
 ### Stretch (only if Day 8 is free, in this order)
@@ -269,12 +272,17 @@ never from measured throughput. Count one multiply-accumulate as 2 operations ev
   nothing. STREAM triad is also measured and reported for comparability; it is not a
   roofline input.
 - `C(t)`: peak throughput at `t` threads from `micro/peak.cpp`, per instruction class:
-  `C_sdot`, `C_smmla`, and `C_fma` for the floating-point FMA that ggml's F16 path uses
-  (check the source).
+  `C_sdot`, `C_smmla`, and two for F16, because ggml's F16 path uses different instructions
+  in each phase (checked in the source; ADR-015): `C_hfma` for FP16 `FMLA` (prefill:
+  llamafile's tinyBLAS) and `C_fmlal` for the widening FP16→FP32 `FMLALB`/`FMLALT` (decode:
+  `ggml_vec_dot_f16`).
 - Each model file's tensor table (name, type, shape, bytes), committed to `results/models/`.
   From it: `W_blk`, `N_blk` = bytes and parameter count of all transformer-block weight
   matrices; `W_out`, `N_out` = the same for the output projection (the embedding table, if
-  tied). The input-embedding lookup reads one row per token — negligible.
+  tied). The input-embedding lookup reads one row per token — negligible. Bytes are the
+  file's, for both builds, so v1 predicts the same speed for `baseline` and `kleidiai`;
+  KleidiAI's load-time conversions change bytes in memory and are a named gap source
+  (ADR-016).
 
 **Decode** (one new token at context length `c`):
 
@@ -285,7 +293,7 @@ never from measured throughput. Count one multiply-accumulate as 2 operations ev
 - `flops_tok = 2 × (N_blk + N_out) + 4 × n_layers × n_heads × head_dim × c`.
 - `predicted_decode_tps = 1 / max(bytes_tok / B(t), flops_tok / C_dec(t))`, where `C_dec`
   is `C_sdot` for quantised formats (a one-row GEMV cannot use `SMMLA` efficiently) and
-  `C_fma` for F16.
+  `C_fmlal` for F16.
 
 **Prefill** (prompt of `P` tokens, processed in `⌈P / n_ubatch⌉` chunks):
 
@@ -295,7 +303,7 @@ never from measured throughput. Count one multiply-accumulate as 2 operations ev
   masked entries are computed too, double it — check and state which.
 - `bytes(P) = ⌈P / n_ubatch⌉ × W_blk + W_out` (+ KV traffic).
 - `predicted_prefill_tps = P / max(flops(P) / C_pre(t), bytes(P) / B(t))`, where `C_pre` is
-  `max(C_sdot, C_smmla)` for quantised formats and `C_fma` for F16.
+  `max(C_sdot, C_smmla)` for quantised formats and `C_hfma` for F16.
 
 **Known-answer anchors for tests** (ggml block definitions; re-check `ggml-common.h` at the
 pinned commit): Q4_0 = 18 B per 32 weights = 4.5 bits/weight; Q8_0 = 34 B / 32 = 8.5;
@@ -314,7 +322,9 @@ ceilings.
 **Expected sources of gap** (named before measuring; explain gaps with these or label them
 *unexplained*): dequantisation and scale arithmetic inside quantised kernels; per-layer
 thread synchronisation (grows with threads, matters most for small models); non-matmul ops
-(norms, RoPE, softmax); achieved vs peak bandwidth for the kernel's real access pattern.
+(norms, RoPE, softmax); achieved vs peak bandwidth for the kernel's real access pattern;
+load-time format conversion (in the `kleidiai` build Q6_K tensors become 8-bit, so Q4_0 and
+Q4_K_M files read more bytes per token than the file holds; measured in §11).
 
 ## 9. Engineering conventions
 
@@ -372,15 +382,65 @@ everything else. If behind by end of Day 7: cut the microbenchmark to scalar vs 
   `sve2`, `svei8mm` and `bf16` present; `sme` and `sme2` absent.
 - SVE vector length: 128 bits, from both `prctl` and the `/proc` default; matches §5.
 - Compiler versions: GCC/G++ 13.3.0 (`Ubuntu 13.3.0-6ubuntu2~24.04.1`), GNU ld 2.42, CMake
-  3.28.3, GNU Make 4.3, Python 3.12.3; Clang not installed. Exact build flags: `TBD` (Day 2).
+  3.28.3, GNU Make 4.3, Python 3.12.3; Clang not installed. Build flags, both llama.cpp builds
+  (ggml-cpu, from ggml's own native detection): `-O3 -DNDEBUG -fopenmp
+  -mcpu=neoverse-v2+crc+sve2-sm4+sve2-aes+sve2-sha3+nossbs+dotprod+i8mm+sve`; CMake Release
+  with Ninja and default options; ggml 0.28.0. The two CMake caches differ only in KleidiAI's
+  own entries, one path and nine settings that KleidiAI's download adds (listed as allowed in
+  the build record). Bandwidth kernel: `g++ -O3 -mcpu=native -std=c++17 -fopenmp`. Source:
+  `results/raw/build/2026-11-01T1727Z_build.json`.
 - llama.cpp commit: `ddf48f85c933c1f438212a02eb21e7b001d2d37d` (HEAD of `ggml-org/llama.cpp`
   on 2026-10-31; pinned in `infra/llamacpp.commit`).
-- KleidiAI build flag, how activation was verified, tensor types it handles: `TBD`
-- Other Arm paths (e.g. Q4_0 repacking) and their state in each build: `TBD`
-- llama-bench fixed settings (`n_batch`, `n_ubatch`, KV type, flash attention, mmap, warm-up): `TBD`
-- Models (source, file, params, size bytes, SHA256, tensor-type mix, tied embeddings y/n): `TBD`
-- Measured bandwidth `B(t)` (kernel, buffer size, value per thread count, repeats; triad too): `TBD`
-- Measured peaks `C(t)` (`SDOT`, `SMMLA`, FP FMA; per thread count; method): `TBD`
+- KleidiAI: flag `-DGGML_CPU_KLEIDIAI=ON` (`ggml/CMakeLists.txt:153`, default OFF); KleidiAI
+  v1.32.0 is downloaded at configure time (MD5 `05f1953428ffe8e8c7f585dc6d508887`, checked).
+  Activation verified three ways: the configure log ("Using KleidiAI optimized kernels if
+  applicable"); `KLEIDIAI = 1` in the system-info line of the `kleidiai` build only; and its
+  load log ("primary q4 kernel feature I8MM", "primary q8 kernel feature I8MM", "no
+  compatible q4_k kernels found", "SME disabled"). On this CPU it takes Q4_0 (GEMM `i8mm`,
+  GEMV `dotprod`), Q8_0 (re-quantised per row at load) and Q6_K (converted to 8-bit at
+  load). Its Q4_K and F16 kernels need SME2 (`kernels.cpp:813`, `:517`), so those stay on
+  ggml's kernels. When KleidiAI and ggml's repack could both take a tensor, KleidiAI wins (it
+  is registered first). Source: `results/raw/build/2026-11-01T1727Z_check_builds.json`
+  (smoke runs; their speeds are not data).
+- Other Arm paths, both builds: system info `NEON, ARM_FMA, FP16_VA, MATMUL_INT8, SVE,
+  DOTPROD, SVE_CNT = 16, OPENMP, REPACK`; llamafile sgemm on. ggml's repack
+  (`GGML_CPU_REPACK`, default ON) takes Q4_0 (`q4_0_4x8`; its 8x8 layout needs 256-bit SVE),
+  Q4_K (`q4_K_8x8`), Q6_K (`q6_K_8x8`) and Q8_0 (`q8_0_4x8`). Weight buffers from the load
+  log, MiB, small / large — Q8_0: REPACK 603.9 / 1743.3 vs KLEIDIAI 603.9 / 1743.3; Q4_0:
+  REPACK 358.0 / 999.4 vs KLEIDIAI 386.4 / 1054.5; Q4_K_M: REPACK 372.4 / 1050.0 vs KLEIDIAI
+  206.4 + REPACK 204.8 / KLEIDIAI 495.0 + REPACK 645.8; F16: memory-mapped in both builds.
+  So the `kleidiai` build holds +28.4 / +55.1 MiB (Q4_0) and +38.8 / +90.8 MiB (Q4_K_M) more
+  weights — about +8 % of the small Q4_0 model's bytes per token — from the Q6_K → 8-bit
+  conversion. `token_embd` stays memory-mapped everywhere (it is only used for row lookups).
+  Source: as above.
+- llama-bench defaults at the pinned commit (Day 2 source reading, `llama-bench.cpp:389-423`,
+  `:2415-2437`): `n_batch` 2048, `n_ubatch` 512, KV cache F16, flash attention `auto`,
+  5 repetitions, one warm-up run. Values fixed for the sweep (incl. mmap): `TBD` (Day 3).
+- Models: `small` = `Qwen/Qwen3-0.6B` @ `c1899de289a04d12100db370d81485cdf75e47ca`, `large` =
+  `Qwen/Qwen3-1.7B` @ `70d244cc86ccca08cf5af4e1e306ecf908b1ad5e` (BF16 safetensors, every
+  file checked against the Hub's hashes). F16 made with the pinned `convert_hf_to_gguf.py`;
+  Q8_0, Q4_0 and Q4_K_M with `llama-quantize` defaults. Both models: 28 layers, 16 heads,
+  8 KV heads, head size 128 (`qwen3.attention.key_length`), vocabulary 151,936;
+  `n_embd`/`n_ff` = 1024/3072 (small) and 2048/6144 (large). **Embeddings:** Qwen's config
+  says tied, but every GGUF has its own `output.weight` (the 1.7B checkpoint lists
+  `lm_head.weight`), so they are untied in llama.cpp and the whole output layer is read every
+  token (`W_out`: 121.7 MiB of the small Q4_0 model's 358.0 MiB). The output layer is Q6_K in
+  the Q4_0 and Q4_K_M files; Q4_K_M's blocks are 168 Q4_K + 28 Q6_K tensors. Sizes, SHA256s
+  and full tables: `results/models/<alias>_<quant>.json`.
+- Measured bandwidth, session `2026-11-01T1727Z` (GB/s = 10⁹ B/s; median of 30 timed repeats
+  after 3 warm-ups; thread i on core i, ADR-014). Read-only kernel, 1 GiB, 8 NEON
+  accumulators, at t = 1/2/4/8: 27.47 / 52.30 / 98.00 / 172.56 at the start and 27.48 /
+  53.29 / 98.19 / 174.00 at the end. STREAM-style triad, 3 × 512 MiB, 24 B per element:
+  41.28 / 86.91 / 148.01 / 234.36 (start) and 43.13 / 86.59 / 146.66 / 232.36 (end). IQR ≤
+  2.6 % of the median everywhere; drift ≤ 1.9 % (read) and ≤ 4.5 % (triad). The read loop is
+  not limited by its add chain (4 / 8 / 16 accumulators: 27.15 / 27.48 / 27.41 at t = 1).
+  Transparent huge pages: `madvise`. **Surprise:** the triad beats the read-only kernel at
+  every t, so one read stream per thread does not reach the memory limit; how `B(t)` is
+  defined is settled before the Day-3 pilot. Known recording bug: `process_cpus` reads `[0]`
+  at every t (it is read after pinning); `taskset_cpus` is the true CPU set. Source:
+  `results/raw/bandwidth/2026-11-01T1727Z_{start,end}.json`.
+- Measured peaks `C(t)` (`SDOT`, `SMMLA`, FP16 `FMLA`, `FMLALB`/`FMLALT`; per thread count;
+  method): `TBD` (Day 3).
 
 ## 12. README headline structure
 
@@ -419,8 +479,8 @@ everything else. If behind by end of Day 7: cut the microbenchmark to scalar vs 
 ## 14. Open decisions (record each in the Decision Log when made)
 
 1. **Instance size** — decided: `c4a-highcpu-8` (ADR-008).
-2. **Model family and sizes** — decided: Qwen3 0.6B + 1.7B (ADR-009). Record in §11
-   whether their embeddings are tied; it changes `bytes_tok` (§8).
+2. **Model family and sizes** — decided: Qwen3 0.6B + 1.7B (ADR-009). Embeddings are untied
+   in the GGUFs (§11).
 3. **Quantisation mix** — decided: `llama-quantize` default (ADR-010).
 4. **Decode at depth** — decide before Day 4. Decode only from an empty context (KV term
    untested), or also at one depth (e.g. 2048, via llama-bench's depth option — verify) to
@@ -442,6 +502,10 @@ everything else. If behind by end of Day 7: cut the microbenchmark to scalar vs 
 | ADR-010 | 2026-10-31 | Quantisation mix: `llama-quantize` default (some tensors kept at higher precision) | Matches what users actually run; the per-tensor table makes the mix explicit in the roofline | `--pure` (cleaner per-format attribution, but not what users run) |
 | ADR-011 | 2026-10-31 | Python 3.12 for the project, on the VM and in CI | It is Ubuntu 24.04's own Python, so the VM needs no extra install; CI should test the version the measurements run on | Python 3.11 (the original spec; needs an extra install on Ubuntu 24.04) |
 | ADR-012 | 2026-10-31 | Formats: F16, Q8_0, Q4_0, Q4_K_M | Q4_0 is KleidiAI's main target and Q8_0 may also be accelerated (verify); F16 and Q4_K_M are the expected negative controls, and together the four span the heaviest format to the most popular 4-bit one | Three formats (shorter sweep, but loses a control or the popular Q4_K_M) |
+| ADR-013 | 2026-11-01 | Negative controls revised (supersedes that part of ADR-012): F16 is the negative control; Q4_K_M is a partial case; Q4_0 and Q8_0 run fully on KleidiAI | Pinned source plus the Day 2 load logs: on this CPU KleidiAI also takes Q8_0 and Q6_K (as 8-bit), while its Q4_K and F16 kernels need SME2. So Q4_K_M's Q6_K tensors move to KleidiAI and its Q4_K tensors stay on ggml's repack in both builds; the four formats now run from "no KleidiAI" to "all KleidiAI" | A `--pure` Q4_K file as a second clean control (not what users run; ADR-010) |
+| ADR-014 | 2026-11-01 | Thread pinning for every measured program: thread i on core i, cores 0…t−1. The process runs under `taskset -c 0-(t-1)` and each thread is pinned inside the program (bandwidth kernel: `pthread_setaffinity_np`; llama-bench from Day 3: `--cpu-mask` + `--cpu-strict 1`) | `B(t)` and the sweep must use the same placement (§7.5). At the pinned commit ggml pins each OpenMP thread only when t > 1 (`ggml-cpu.c:3438-3462`), so `taskset` covers t = 1 | Unpinned threads (placement unknown, noisier); `OMP_PROC_BIND`/`OMP_PLACES` (would fight ggml's own per-thread pinning) |
+| ADR-015 | 2026-11-01 | F16 gets two compute peaks in §8, replacing `C_fma`: `C_hfma` (FP16 `FMLA`) for prefill and `C_fmlal` (widening FP16→FP32 `FMLALB`/`FMLALT`) for decode | Checked in the pinned source: F16 prefill runs llamafile's tinyBLAS with `vfmaq_f16` (`sgemm.cpp`), and F16 decode (fewer than 8 rows) falls back to `ggml_vec_dot_f16`, whose SVE2 path uses `svmlalb`/`svmlalt` (`vec.h`). Settled before the pilot, as §8 asked ("check the source") | One FP peak for both phases (the wrong ceiling for one of them) |
+| ADR-016 | 2026-11-01 | Roofline v1 takes bytes from the file's tensor table for both builds, so it predicts the same speed for `baseline` and `kleidiai`; KleidiAI's load-time conversions are a named gap source, not part of v1 | One ceiling per point means any build difference is the kernels' doing. The conversion is measured (§11: +28 to +91 MiB) and can explain part of a KleidiAI decode change | Per-build bytes from the load log (it reports allocation sizes, which need not equal the bytes a kernel reads) |
 
 ## 16. Progress Log
 
@@ -464,3 +528,15 @@ everything else. If behind by end of Day 7: cut the microbenchmark to scalar vs 
   (SDOT, SMMLA, SVE2 at 128 bits), one thread per core and no SME. llama.cpp is pinned to
   `ddf48f8`. The capture shows `dirty` only because the new pin file was not committed yet.
   Next: Day 2.
+- 2026-11-01 — **Day 2 gate passed** (session `2026-11-01T1727Z`; code `8d92938`, records
+  `a7d8c38`). Both builds run llama-bench; KleidiAI's activation shows in the configure log,
+  the system-info line and the load log; the eight tensor tables are committed; `B(t)` was
+  measured at the start and end of the session. ADR-013 to ADR-016 recorded. In plain
+  English: one Axion core reads memory at about 27 GB/s and all eight at about 173 GB/s,
+  steady within 2% over the session. KleidiAI takes Q4_0 and Q8_0, and also turns 6-bit
+  tensors into 8-bit as it loads them, so with the small Q4_0 model it reads about 8% more
+  bytes per token than the baseline does; F16 is the clean control. Open surprise: a
+  STREAM-style triad moves more data than our read-only test (234 vs 173 GB/s at 8 threads),
+  so one read stream per core does not reach the memory limit; `B(t)` is settled on Day 3,
+  before the pilot. Known issue: one VM test fails on a reporting bug (`process_cpus`), not
+  on the data. Next: Day 3.
