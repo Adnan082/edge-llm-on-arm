@@ -1,5 +1,5 @@
-# Targets follow ARCHITECTURE.md §6. Day 1-2: env, build, models, bandwidth, check-builds,
-# test, lint. The rest fail loudly until their day comes, so nothing silently does nothing.
+# Targets follow ARCHITECTURE.md §6. Day 1-3: env, build, models, bandwidth, check-builds, peak,
+# bench, test, lint. The rest fail loudly until their day comes, so nothing silently does nothing.
 # On a fresh VM run `bash infra/setup_vm.sh` once before any target.
 
 # Use the venv made by setup_vm.sh when it exists.
@@ -24,6 +24,13 @@ bandwidth:  ## B(t): make bandwidth PHASE=start|end -> results/raw/bandwidth/
 	@test -n "$(PHASE)" || { echo "usage: make bandwidth PHASE=start|end"; exit 1; }
 	$(PYTHON) -m bench.bandwidth.run_bandwidth --phase $(PHASE)
 
+peak:  ## C(t): SDOT / SMMLA / FP16 FMLA / FMLALB+T / F32 FMLA peaks per thread count -> results/raw/peak/ (~3 min)
+	$(PYTHON) -m micro.run_peak
+
+bench:  ## make bench SET=pilot|full -> results/raw/bench/<session_id>/<config_id>.json
+	@test -n "$(SET)" || { echo "usage: make bench SET=pilot|full"; exit 1; }
+	$(PYTHON) -m bench.run_sweep --set $(SET) $(BENCH_ARGS)
+
 check-builds:  ## KleidiAI activation + buffer types per model/build (smoke runs) -> results/raw/build/
 	$(PYTHON) -m bench.check_builds
 
@@ -34,12 +41,8 @@ lint:
 	$(PYTHON) -m ruff check .
 	$(PYTHON) -m black --check .
 
-peak:
-	@echo "not implemented yet (Day 3: micro/peak.cpp)"; exit 1
 predict:
 	@echo "not implemented yet (Day 4: roofline.py)"; exit 1
-bench:
-	@echo "not implemented yet (Day 3: bench/run_sweep.py)"; exit 1
 analyse:
 	@echo "not implemented yet (Day 5-6: analyse.py)"; exit 1
 figures:

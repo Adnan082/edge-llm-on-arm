@@ -13,7 +13,7 @@ import pytest
 from bench import build_record, check_builds, common
 from bench.bandwidth import run_bandwidth
 from edge_llm import gguf_table
-from tests.test_bandwidth_wrapper import fake_run
+from tests.test_bandwidth_wrapper import fake_result, fake_run
 from tests.test_build_record import CMAKE_SNIPPET, cache
 from tests.test_gguf_table import write_tiny
 
@@ -163,12 +163,22 @@ def test_run_bandwidth_main_writes_record_and_disassembly(tmp_path, monkeypatch,
     out = tmp_path / "bw"
     monkeypatch.setattr(run_bandwidth, "ensure_binary", lambda: {"sha256": "x"})
     monkeypatch.setattr(run_bandwidth, "thread_counts", lambda: [1, 2, 4, 8])
-    monkeypatch.setattr(run_bandwidth, "objdump_read_loop", lambda: "0000 <read_slice_acc8>:\n")
+    monkeypatch.setattr(run_bandwidth, "objdump_read_loop", lambda: "0000 <read_slice_acc8_k1>:\n")
+    calls = []
 
     def fake_run_once(t, extra):
+        calls.append((t, tuple(extra)))
         if "--acc-check" in extra:
-            r = fake_run(1)["results"][0]
-            return {"threads": 1, "results": [{**r, "acc": a} for a in (4, 8, 16)]}
+            streams = [int(k) for k in extra[extra.index("--streams") + 1].split(",")]
+            results = [fake_result("read", 1, k, acc=a) for k in streams for a in (4, 8, 16)]
+            # flat across accumulators: only the stream count changes the level
+            for r in results:
+                r["samples_bytes_per_s"] = [12e9] * 25
+            return {"threads": 1, "results": results}
+        if "--hugepage" in extra:
+            run = fake_run(t, streams=())
+            run["results"] = [fake_result("read", t, 1, hugepage=True)]
+            return run
         return fake_run(t)
 
     monkeypatch.setattr(run_bandwidth, "run_once", fake_run_once)
@@ -180,8 +190,12 @@ def test_run_bandwidth_main_writes_record_and_disassembly(tmp_path, monkeypatch,
         "2026-11-02T0900Z_start_read_loop.s",
     ]
     rec = json.loads((out / names[0]).read_text())
-    assert len(rec["points"]) == 8 and rec["acc_check"]["pass"] is True
+    # 4 thread counts x (4 stream counts + triad) + 2 huge-page diagnostics
+    assert len(rec["points"]) == 22 and rec["acc_check"]["pass"] is True
+    assert [p["threads"] for p in rec["points"] if p["hugepage"]] == [1, 8]
+    assert all(p["streams"] in (1, 2, 4, 8) for p in rec["points"] if p["kernel"] == "read")
     assert rec["objdump_file"].endswith("_start_read_loop.s")
+    assert (8, ("--kernel", "read", "--streams", "1", "--hugepage", "--reps", "30")) in calls
 
     # a second `start` in the same session is skipped, never overwritten
     assert run_bandwidth.main() == 0

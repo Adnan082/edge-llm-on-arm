@@ -25,8 +25,9 @@ SESSION_FILE = WORK_DIR / "session_id"
 
 # Changes under these folders do not make a record "dirty": every recorder adds files there, so
 # counting them would make each record after the first one show `dirty: true` (CLAUDE.md §7.1
-# wants the sweep to start from a clean pushed commit).
-DIRTY_IGNORE_PREFIXES = ("results/",)
+# wants the sweep to start from a clean pushed commit). micro/disasm/ holds the disassembly that
+# `make peak` writes: evidence produced on the VM, committed with the results.
+DIRTY_IGNORE_PREFIXES = ("results/", "micro/disasm/")
 
 
 def run(
@@ -142,3 +143,32 @@ def rel(path: Path) -> str:
         return str(path.resolve().relative_to(REPO_ROOT))
     except ValueError:
         return str(path)
+
+
+# --- compiling the small C++ programs ------------------------------------------------------
+
+
+def ensure_binary(source: Path, binary: Path, flags_file: Path, cmd: list[str]) -> dict:
+    """Compile `source` with `cmd` if the binary is missing, older than the source, or the flags
+    changed since the last build; return what a record needs to say about the binary."""
+    import hashlib
+    import shlex
+    import subprocess
+
+    flags_now = shlex.join(cmd)
+    stale = (
+        not binary.exists()
+        or binary.stat().st_mtime < source.stat().st_mtime
+        or read_text(flags_file) != flags_now
+    )
+    if stale:
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        print("compiling:", flags_now)
+        subprocess.run(cmd, check=True)
+        flags_file.write_text(flags_now + "\n")
+    return {
+        "path": rel(binary),
+        "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+        "compile_command": flags_now,
+        "compiler": run(["g++", "--version"]),
+    }

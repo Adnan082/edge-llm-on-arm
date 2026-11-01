@@ -8,8 +8,9 @@ holds: the pinned commit and CMake options of each build; the compiler flags act
 the ggml-cpu and KleidiAI sources (from compile_commands.json); KleidiAI's version, URL and
 hash; and the KleidiAI lines of the configure log. Standard library plus edge_llm.schema.
 
-The only differences allowed between the two CMakeCache.txt files are KleidiAI entries and
-paths (the builds live in different folders). Anything else means the comparison in RQ3 would
+The only differences allowed between the two CMakeCache.txt files are KleidiAI entries (including
+the nine settings its download adds, KLEIDIAI_SIDE_EFFECT_KEYS) and paths (the builds live in
+different folders). Anything else means the comparison in RQ3 would
 not be like for like, so `--check-caches` fails and lists the keys. If a listed key is
 harmless, rerun with CACHE_DIFF_ALLOW="KEY1,KEY2"; the allowance is written to the record.
 """
@@ -48,6 +49,21 @@ CPU_SOURCES = (
     "ggml/src/ggml-cpu/kleidiai/kernels.cpp",
 )
 PATH_KEY_SUFFIXES = ("_DIR", "_PATH", "_BINARY_DIR", "_SOURCE_DIR")
+# Entries CMake itself adds to the cache when KleidiAI's source is downloaded with FetchContent
+# and its sub-project is configured (seen in the Day 2 build record, where each needed a
+# CACHE_DIFF_ALLOW). They are caused by -DGGML_CPU_KLEIDIAI=ON and change no compiler flag of
+# ggml's own sources, so they count as KleidiAI differences, in a list of their own.
+KLEIDIAI_SIDE_EFFECT_KEYS = (
+    "CMAKE_NUMBER_OF_MAKEFILES",
+    "CMAKE_PROJECT_VERSION",
+    "CMAKE_PROJECT_VERSION_MAJOR",
+    "CMAKE_PROJECT_VERSION_MINOR",
+    "CMAKE_PROJECT_VERSION_PATCH",
+    "CMAKE_PROJECT_VERSION_TWEAK",
+    "FETCHCONTENT_FULLY_DISCONNECTED",
+    "FETCHCONTENT_QUIET",
+    "FETCHCONTENT_UPDATES_DISCONNECTED",
+)
 CONFIGURE_LINE_RE = re.compile(
     r"kleidi|ARM detected|GGML_MACHINE_SUPPORTS|OpenMP|CPU backend|llamafile|repack",
     re.IGNORECASE,
@@ -90,6 +106,7 @@ def diff_caches(
     nb = {k: v.replace(b_dir, "<BUILD_DIR>") for k, v in b.items()}
     out: dict[str, list[str]] = {
         "kleidiai_keys": [],
+        "kleidiai_side_effect_keys": [],
         "path_keys": [],
         "allowed_by_user": [],
         "unexpected_keys": [],
@@ -99,6 +116,8 @@ def diff_caches(
             continue
         if is_kleidiai_key(key):
             out["kleidiai_keys"].append(key)
+        elif key in KLEIDIAI_SIDE_EFFECT_KEYS:
+            out["kleidiai_side_effect_keys"].append(key)
         elif key in allow:
             out["allowed_by_user"].append(key)
         elif is_path_key(key):

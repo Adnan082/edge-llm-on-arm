@@ -9,17 +9,19 @@ bytes/s with median, IQR and max, plus the pin check, checksum result, compile f
 average before/after, transparent-hugepage setting and repo state. The disassembly of the read
 loop is saved next to it. Run `start` and `end` around a sitting to see drift (CLAUDE.md §7.5).
 
+The read kernel runs with k = 1, 2, 4 and 8 interleaved streams per thread (ADR-017):
+B(t) = the best median over k, B1(t) = the k = 1 median. As a diagnostic only, k = 1 is also run
+with transparent huge pages at t = 1 and t = 8; those points never enter B(t).
+
 Also checks that the 1-thread read result does not change when the number of independent
-accumulators is doubled (8 -> 16): if it does, the loop was limited by its add chain and not
-by memory. A failed check still writes the record, then exits non-zero.
+accumulators is doubled (8 -> 16), at k = 1 and k = 8: if it does, the loop was limited by its
+add chain and not by memory. A failed check still writes the record, then exits non-zero.
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-import shlex
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -27,6 +29,7 @@ from pathlib import Path
 
 from bench import common
 from bench.common import REPO_ROOT, WORK_DIR
+from edge_llm.bandwidth import HUGEPAGE_DIAGNOSTIC_THREADS, STREAM_COUNTS, b_of_t
 from edge_llm.schema import SCHEMA_VERSION, BandwidthRecord
 from edge_llm.stats import summarise
 
@@ -36,7 +39,9 @@ FLAGS_FILE = WORK_DIR / "bin" / "bandwidth.flags"
 OUT_DIR = common.RESULTS_DIR / "raw" / "bandwidth"
 COMPILE_FLAGS = ["-O3", "-mcpu=native", "-std=c++17", "-fopenmp", "-Wall", "-Wextra"]
 ACC_TOLERANCE = 0.03  # doubling the accumulators may move the 1-thread result by <= 3 %
+ACC_CHECK_STREAMS = (1, 8)  # the stream counts the accumulator check covers
 THP_FILE = "/sys/kernel/mm/transparent_hugepage/enabled"
+STREAMS_ARG = ",".join(str(k) for k in STREAM_COUNTS)
 
 
 def compile_command() -> list[str]:
@@ -45,24 +50,7 @@ def compile_command() -> list[str]:
 
 def ensure_binary() -> dict:
     """Compile if the binary is missing or older than the source or the flags changed."""
-    cmd = compile_command()
-    flags_now = shlex.join(cmd)
-    stale = (
-        not BINARY.exists()
-        or BINARY.stat().st_mtime < SOURCE.stat().st_mtime
-        or common.read_text(FLAGS_FILE) != flags_now
-    )
-    if stale:
-        BINARY.parent.mkdir(parents=True, exist_ok=True)
-        print("compiling:", flags_now)
-        subprocess.run(cmd, check=True)
-        FLAGS_FILE.write_text(flags_now + "\n")
-    return {
-        "path": common.rel(BINARY),
-        "sha256": hashlib.sha256(BINARY.read_bytes()).hexdigest(),
-        "compile_command": flags_now,
-        "compiler": common.run(["g++", "--version"]),
-    }
+    return common.ensure_binary(SOURCE, BINARY, FLAGS_FILE, compile_command())
 
 
 def run_once(t: int, extra: list[str]) -> dict:
@@ -83,6 +71,13 @@ def to_point(run: dict, result: dict) -> dict:
     """Turn one kernel's raw program output into a BandwidthPoint dict."""
     t = run["threads"]
     s = summarise(result["samples_bytes_per_s"])
+    streams = result.get("streams", 1)
+    if result["kernel"] == "read":
+        note = f"{result['acc']} independent accumulators, {streams} read stream(s) per thread"
+        if result.get("hugepage"):
+            note += ", madvise(MADV_HUGEPAGE): diagnostic only"
+    else:
+        note = None
     return {
         "kernel": result["kernel"],
         "threads": t,
@@ -104,16 +99,24 @@ def to_point(run: dict, result: dict) -> dict:
         "iqr": s["iqr"],
         "max": s["max"],
         "checksum_ok": bool(result["checksum_ok"]),
-        "note": f"{result['acc']} independent accumulators" if result["kernel"] == "read" else None,
+        "note": note,
+        "streams": streams,
+        "hugepage": bool(result.get("hugepage", False)),
+        "anon_huge_kb": result.get("anon_huge_kb"),
     }
 
 
-def acc_check_summary(run: dict) -> dict:
-    """Compare the 1-thread read result with 4, 8 and 16 accumulators."""
-    med = {r["acc"]: summarise(r["samples_bytes_per_s"])["median"] for r in run["results"]}
+def acc_check_summary(run: dict, streams: int = 1) -> dict:
+    """Compare the read result with 4, 8 and 16 accumulators at one stream count."""
+    med = {
+        r["acc"]: summarise(r["samples_bytes_per_s"])["median"]
+        for r in run["results"]
+        if r.get("streams", 1) == streams
+    }
     ratio = med[16] / med[8]
     return {
         "threads": run["threads"],
+        "streams": streams,
         "median_bytes_per_s_by_accumulators": {str(k): v for k, v in sorted(med.items())},
         "ratio_16_over_8": ratio,
         "tolerance": ACC_TOLERANCE,
@@ -121,9 +124,29 @@ def acc_check_summary(run: dict) -> dict:
     }
 
 
+def acc_check_all(run: dict) -> dict:
+    """The accumulator check at every stream count in the run; passes only if all do."""
+    present = sorted({r.get("streams", 1) for r in run["results"]})
+    by_k = {str(k): acc_check_summary(run, k) for k in present}
+    return {
+        "threads": run["threads"],
+        "by_streams": by_k,
+        "ratio_16_over_8": by_k["1"]["ratio_16_over_8"],
+        "tolerance": ACC_TOLERANCE,
+        "pass": all(c["pass"] for c in by_k.values()),
+    }
+
+
 def objdump_read_loop() -> str:
     out = common.run(
-        ["objdump", "-d", "-C", "--no-show-raw-insn", "--disassemble=read_slice_acc8", str(BINARY)],
+        [
+            "objdump",
+            "-d",
+            "-C",
+            "--no-show-raw-insn",
+            "--disassemble=read_slice_acc8_k1",
+            str(BINARY),
+        ],
         timeout=60,
         strip=False,
     )
@@ -134,6 +157,25 @@ def thread_counts() -> list[int]:
     import yaml
 
     return list(yaml.safe_load((REPO_ROOT / "configs" / "sweep.yaml").read_text())["threads"])
+
+
+def print_table(record: BandwidthRecord, threads: list[int]) -> None:
+    b = b_of_t(record.points)
+    triad = {p.threads: p for p in record.points if p.kernel == "triad"}
+    hp = {p.threads: p for p in record.points if p.hugepage}
+    gb = 1e9
+    print(
+        f"{'threads':>7} {'B(t) GB/s':>10} {'best k':>6} {'B1(t) GB/s':>11} {'B/B1':>6}"
+        f" {'triad GB/s':>11} {'k=1 +THP':>9}"
+    )
+    for t in threads:
+        h = f"{hp[t].median / gb:>9.2f}" if t in hp else f"{'-':>9}"
+        print(
+            f"{t:>7} {b[t].b / gb:>10.2f} {b[t].streams:>6} {b[t].b1 / gb:>11.2f}"
+            f" {b[t].b / b[t].b1:>6.3f} {triad[t].median / gb:>11.2f} {h}"
+        )
+    for t, p in sorted(hp.items()):
+        print(f"  t={t}: AnonHugePages after first touch = {p.anon_huge_kb} kB (0 = no huge pages)")
 
 
 def main() -> int:
@@ -159,10 +201,16 @@ def main() -> int:
     loadavg_before = common.loadavg()
     points, failed = [], False
     for t in threads:
-        run = run_once(t, ["--kernel", "both", *extra])
+        run = run_once(t, ["--kernel", "both", "--streams", STREAMS_ARG, *extra])
         failed = failed or run["returncode"] != 0
         points += [to_point(run, r) for r in run["results"]]
-    acc = acc_check_summary(run_once(1, ["--acc-check", *extra]))
+    for t in HUGEPAGE_DIAGNOSTIC_THREADS:  # diagnostic only: never part of B(t)
+        if t in threads:
+            run = run_once(t, ["--kernel", "read", "--streams", "1", "--hugepage", *extra])
+            failed = failed or run["returncode"] != 0
+            points += [to_point(run, r) for r in run["results"]]
+    acc_streams = ",".join(str(k) for k in ACC_CHECK_STREAMS)
+    acc = acc_check_all(run_once(1, ["--acc-check", "--streams", acc_streams, *extra]))
     loadavg_after = common.loadavg()
 
     record = {
@@ -187,25 +235,19 @@ def main() -> int:
     record_path = common.next_free_path(target)
     objdump_path = record_path.with_name(record_path.stem + "_read_loop.s")
     record["objdump_file"] = common.rel(objdump_path)
-    BandwidthRecord.from_dict(record)  # raises if a checksum, pin check or sample count is bad
+    validated = BandwidthRecord.from_dict(record)  # raises on a bad checksum, pin check or count
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     objdump_path.write_text(objdump_read_loop())
     common.write_new_json(record_path, record)
     print(f"wrote {record_path} and {objdump_path.name}")
 
-    print(f"{'threads':>7} {'read GB/s':>10} {'IQR %':>6} {'triad GB/s':>11} {'IQR %':>6}")
-    by = {(p["kernel"], p["threads"]): p for p in points}
-    for t in threads:
-        r, tr = by[("read", t)], by[("triad", t)]
+    print_table(validated, threads)
+    for k, c in acc["by_streams"].items():
         print(
-            f"{t:>7} {r['median'] / 1e9:>10.2f} {100 * r['iqr'] / r['median']:>6.2f}"
-            f" {tr['median'] / 1e9:>11.2f} {100 * tr['iqr'] / tr['median']:>6.2f}"
+            f"accumulator check (1 thread, k={k}, 16 vs 8): ratio {c['ratio_16_over_8']:.3f}",
+            "PASS" if c["pass"] else "FAIL",
         )
-    print(
-        f"accumulator check (1 thread, 16 vs 8): ratio {acc['ratio_16_over_8']:.3f}",
-        "PASS" if acc["pass"] else "FAIL",
-    )
     if not acc["pass"]:
         print(
             "the read loop is limited by its add chain, not by memory: do not use B(t) yet",

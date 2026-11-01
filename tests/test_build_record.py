@@ -119,3 +119,32 @@ def test_kleidiai_pin_is_read_from_cmake_text():
     assert info["tag"] == "v1.32.0"
     assert info["url"].endswith("/v1.32.0/kleidiai-v1.32.0-src.tar.gz")
     assert info["md5"] == "05f1953428ffe8e8c7f585dc6d508887"
+
+
+SIDE_EFFECTS = (
+    "CMAKE_NUMBER_OF_MAKEFILES:INTERNAL=1\n"
+    "CMAKE_PROJECT_VERSION:STATIC=1.32.0\n"
+    "CMAKE_PROJECT_VERSION_MAJOR:STATIC=1\n"
+    "CMAKE_PROJECT_VERSION_MINOR:STATIC=32\n"
+    "CMAKE_PROJECT_VERSION_PATCH:STATIC=0\n"
+    "CMAKE_PROJECT_VERSION_TWEAK:STATIC=\n"
+    "FETCHCONTENT_FULLY_DISCONNECTED:BOOL=OFF\n"
+    "FETCHCONTENT_QUIET:BOOL=ON\n"
+    "FETCHCONTENT_UPDATES_DISCONNECTED:BOOL=OFF\n"
+)
+
+
+def test_the_nine_settings_kleidiais_download_adds_need_no_allow_list():
+    """Day 2 needed CACHE_DIFF_ALLOW for these; a fresh clone must build without it."""
+    assert len(br.KLEIDIAI_SIDE_EFFECT_KEYS) == 9
+    d = br.diff_caches(cache(BASE, False), cache(KAI, True, SIDE_EFFECTS), BASE, KAI)
+    assert d["unexpected_keys"] == [] and d["allowed_by_user"] == []
+    assert sorted(d["kleidiai_side_effect_keys"]) == sorted(br.KLEIDIAI_SIDE_EFFECT_KEYS)
+
+
+def test_a_genuinely_different_key_still_stops_the_build():
+    # only the nine named settings are excused as KleidiAI side effects
+    d = br.diff_caches(
+        cache(BASE, False, "GGML_LTO:BOOL=ON\n"), cache(KAI, True, SIDE_EFFECTS), BASE, KAI
+    )
+    assert [k.split(":")[0] for k in d["unexpected_keys"]] == ["GGML_LTO"]

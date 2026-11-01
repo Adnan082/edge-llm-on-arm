@@ -34,3 +34,11 @@ def summarise(samples: Sequence[float]) -> dict[str, float | int]:
         "max": max(samples),
         "iqr_over_median": (q3 - q1) / med if med else float("nan"),
     }
+
+
+NOISY_THRESHOLD = 0.05  # CLAUDE.md §7.4: IQR/median above this flags a point as noisy
+
+
+def is_noisy(samples: Sequence[float], threshold: float = NOISY_THRESHOLD) -> bool:
+    """True if IQR/median of the samples is above the threshold."""
+    return summarise(samples)["iqr_over_median"] > threshold

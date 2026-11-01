@@ -3,7 +3,8 @@
 Plain dataclasses, no third-party validation library. Each `from_dict` rejects missing or
 unknown keys and checks the invariants a downstream step relies on; `to_dict` gives back the
 JSON-ready form. Day 2 covers: model tensor tables, bandwidth records, build records and
-check-builds (smoke) records. The bench record (llama-bench output) is added on Day 3.
+check-builds (smoke) records. Day 3 adds the peak record, the ggml F16-instruction counts
+and the bench record (llama-bench output).
 """
 
 from __future__ import annotations
@@ -14,11 +15,13 @@ import re
 from dataclasses import dataclass, field, fields
 from typing import Any
 
-from edge_llm.stats import summarise
+from edge_llm.peak import BASE_ACCUMULATORS, PEAK_CLASSES
+from edge_llm.stats import NOISY_THRESHOLD, summarise
 
 SCHEMA_VERSION = 1
 ROLES = ("blk", "out", "emb", "other")
 BANDWIDTH_KERNELS = ("read", "triad")
+READ_STREAMS = (1, 2, 4, 8)  # interleaved read streams per thread (ADR-017)
 MIN_BANDWIDTH_REPS = 20  # CLAUDE.md-style rule from the Day 2 brief: at least 20 timed repeats
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -31,7 +34,14 @@ def _check_keys(cls: type, d: dict, where: str) -> None:
     if not isinstance(d, dict):
         raise SchemaError(f"{where}: expected an object, got {type(d).__name__}")
     names = {f.name for f in fields(cls)}
-    missing, extra = names - d.keys(), d.keys() - names
+    # Fields with a default may be absent: that is how Day 2 records (written before a field
+    # existed) stay valid.
+    required = {
+        f.name
+        for f in fields(cls)
+        if f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING
+    }
+    missing, extra = required - d.keys(), d.keys() - names
     if missing or extra:
         raise SchemaError(f"{where}: missing keys {sorted(missing)}, unknown keys {sorted(extra)}")
 
@@ -173,11 +183,22 @@ class BandwidthPoint:
     max: float
     checksum_ok: bool
     note: str | None = None
+    # Added on Day 3 (ADR-017). Day 2 records have one read stream and no huge-page runs.
+    streams: int = 1  # read streams per thread (k); the triad ignores it
+    hugepage: bool = False  # diagnostic run with madvise(MADV_HUGEPAGE); never part of B(t)
+    anon_huge_kb: int | None = None  # AnonHugePages after the first touch
 
     def __post_init__(self) -> None:
-        w = f"bandwidth point {self.kernel} t={self.threads}"
+        w = f"bandwidth point {self.kernel} t={self.threads} k={self.streams}"
         _require(self.kernel in BANDWIDTH_KERNELS, f"{w}: unknown kernel")
         _require(self.threads > 0, f"{w}: threads must be positive")
+        if self.kernel == "read":
+            _require(self.streams in READ_STREAMS, f"{w}: streams must be in {READ_STREAMS}")
+        if self.hugepage:
+            _require(
+                self.kernel == "read" and self.streams == 1,
+                f"{w}: huge-page diagnostics are one-stream read runs",
+            )
         _require(
             self.reps_timed >= MIN_BANDWIDTH_REPS,
             f"{w}: needs at least {MIN_BANDWIDTH_REPS} timed repeats, has {self.reps_timed}",
@@ -218,11 +239,24 @@ class BandwidthRecord:
         _require(self.kind == "bandwidth", f"kind must be 'bandwidth', got {self.kind!r}")
         _require(self.phase in ("start", "end"), f"phase must be start or end: {self.phase!r}")
         _require(self.points, "no bandwidth points")
-        seen = {(p.kernel, p.threads) for p in self.points}
-        _require(len(seen) == len(self.points), "duplicate (kernel, threads) points")
+        seen = {(p.kernel, p.threads, p.streams, p.hugepage) for p in self.points}
         _require(
-            {k for k, _ in seen} == set(BANDWIDTH_KERNELS),
+            len(seen) == len(self.points), "duplicate (kernel, threads, streams, hugepage) points"
+        )
+        _require(
+            {k for k, *_ in seen} == set(BANDWIDTH_KERNELS),
             f"expected both kernels {BANDWIDTH_KERNELS}",
+        )
+        # Every thread count has the same set of plain read stream counts, k = 1 among them
+        # (a Day 2 record has only k = 1; a Day 3 one has all of READ_STREAMS).
+        by_t: dict[int, set[int]] = {}
+        for p in self.points:
+            if p.kernel == "read" and not p.hugepage:
+                by_t.setdefault(p.threads, set()).add(p.streams)
+        _require(
+            all(1 in ks for ks in by_t.values())
+            and len({frozenset(ks) for ks in by_t.values()}) == 1,
+            "every thread count needs the same read stream counts, including k = 1",
         )
 
     @classmethod
@@ -338,6 +372,268 @@ class CheckBuildsRecord:
         _check_keys(cls, d, "check-builds record")
         d = dict(d)
         d["runs"] = [SmokeRun.from_dict(r) for r in d["runs"]]
+        return cls(**d)
+
+    def to_dict(self) -> dict:
+        return dataclasses.asdict(self)
+
+
+# --- peak record (results/raw/peak/<session_id>.json) ---------------------------------------
+
+MIN_PEAK_REPS = 20
+
+
+def _summary_matches(obj: Any, samples: list[float], where: str) -> None:
+    """The stored median/quartiles/IQR/max must be recomputable from the samples."""
+    s = summarise(samples)
+    for name in ("median", "q1", "q3", "iqr", "max"):
+        _require(
+            math.isclose(getattr(obj, name), s[name], rel_tol=1e-9),
+            f"{where}: {name} does not match the samples",
+        )
+
+
+@dataclass
+class PeakPoint:
+    instr_class: str
+    threads: int
+    accumulators: int  # independent dependency chains in the loop
+    instr_per_iter: int  # instructions of the class per loop iteration
+    iters: int
+    pinning: dict
+    reps_warmup: int
+    reps_timed: int
+    ops_per_instruction: float
+    samples_instr_per_s: list[float]
+    samples_ops_per_s: list[float]
+    median: float  # of samples_ops_per_s
+    q1: float
+    q3: float
+    iqr: float
+    max: float
+    checksum: str
+
+    def __post_init__(self) -> None:
+        w = f"peak point {self.instr_class} t={self.threads} acc={self.accumulators}"
+        _require(self.instr_class in PEAK_CLASSES, f"{w}: unknown class")
+        _require(self.threads > 0 and self.accumulators > 0, f"{w}: bad threads/accumulators")
+        _require(
+            self.reps_timed >= MIN_PEAK_REPS,
+            f"{w}: needs at least {MIN_PEAK_REPS} timed repeats, has {self.reps_timed}",
+        )
+        _require(
+            len(self.samples_instr_per_s) == self.reps_timed == len(self.samples_ops_per_s),
+            f"{w}: sample count != reps",
+        )
+        _require(all(s > 0 for s in self.samples_instr_per_s), f"{w}: non-positive sample")
+        _require(
+            all(
+                math.isclose(o, i * self.ops_per_instruction, rel_tol=1e-9)
+                for i, o in zip(self.samples_instr_per_s, self.samples_ops_per_s, strict=True)
+            ),
+            f"{w}: ops/s is not instructions/s times ops per instruction",
+        )
+        _require(self.pinning.get("getcpu_ok") is True, f"{w}: sched_getcpu() pin check failed")
+        _summary_matches(self, self.samples_ops_per_s, w)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> PeakPoint:
+        _check_keys(cls, d, "peak point")
+        return cls(**d)
+
+
+@dataclass
+class PeakRecord:
+    schema_version: int
+    kind: str
+    session_id: str
+    captured_utc: str
+    repo: dict
+    binary: dict
+    host: dict
+    sve_vector_bits: int
+    points: list[PeakPoint]
+    acc_check: list[dict]  # per class: does more accumulators raise the 1-thread peak?
+    disasm: dict  # per class: file and the hot-loop checks
+
+    def __post_init__(self) -> None:
+        _require(self.kind == "peak", f"kind must be 'peak', got {self.kind!r}")
+        _require(self.points, "no peak points")
+        keys = [(p.instr_class, p.threads, p.accumulators) for p in self.points]
+        _require(len(set(keys)) == len(keys), "duplicate (class, threads, accumulators) points")
+        base = [p for p in self.points if p.accumulators == BASE_ACCUMULATORS]
+        _require({p.instr_class for p in base} == set(PEAK_CLASSES), "need every peak class")
+        threads = {c: {p.threads for p in base if p.instr_class == c} for c in PEAK_CLASSES}
+        _require(
+            len({frozenset(t) for t in threads.values()}) == 1 and 1 in threads["sdot"],
+            "every class needs the same thread counts, 1-thread included",
+        )
+        _require(
+            {a["instr_class"] for a in self.acc_check} == set(PEAK_CLASSES)
+            and all(a["pass"] is True for a in self.acc_check),
+            "accumulator check missing or failed: more chains still raise the 1-thread peak",
+        )
+        _require(set(self.disasm) == set(PEAK_CLASSES), "need a disassembly check per class")
+        for cls_, d in self.disasm.items():
+            _require(
+                bool(d.get("checks")) and all(c["ok"] is True for c in d["checks"]),
+                f"{cls_}: disassembly check failed (wrong instruction, count or memory access)",
+            )
+
+    @classmethod
+    def from_dict(cls, d: dict) -> PeakRecord:
+        _check_keys(cls, d, "peak record")
+        d = dict(d)
+        d["points"] = [PeakPoint.from_dict(p) for p in d["points"]]
+        return cls(**d)
+
+    def to_dict(self) -> dict:
+        return dataclasses.asdict(self)
+
+
+@dataclass
+class GgmlInstructionRecord:
+    """F16 instruction counts (ADR-015) and the tiled flash-attention function (ADR-020) of each
+    build's ggml CPU library. The kind keeps its Day 3 name."""
+
+    schema_version: int
+    kind: str
+    session_id: str
+    captured_utc: str
+    repo: dict
+    builds: dict  # build -> {"files": [{path, sha256, counts, top_symbols}], "counts": {...}}
+
+    def __post_init__(self) -> None:
+        _require(self.kind == "ggml_f16_instructions", f"bad kind {self.kind!r}")
+        _require(set(self.builds) == {"baseline", "kleidiai"}, "need baseline + kleidiai")
+        for name, b in self.builds.items():
+            for key in ("fmlalb", "fmlalt", "fmla_8h"):
+                _require(
+                    isinstance(b["counts"].get(key), int) and b["counts"][key] >= 0,
+                    f"{name}: counts.{key} must be a non-negative integer",
+                )
+            attn = b.get("flash_attn_tiled")
+            _require(
+                isinstance(attn, dict) and "found" in attn, f"{name}: flash_attn_tiled missing"
+            )
+            if attn["found"]:
+                _require(
+                    bool(attn.get("disasm_file")), f"{name}: no disassembly file for attention"
+                )
+                for key in ("fmadd_s", "fmla_4s", "fmla_sve_s"):
+                    _require(
+                        isinstance(attn["counts"].get(key), int) and attn["counts"][key] >= 0,
+                        f"{name}: flash_attn_tiled counts.{key} must be a non-negative integer",
+                    )
+
+    @classmethod
+    def from_dict(cls, d: dict) -> GgmlInstructionRecord:
+        _check_keys(cls, d, "ggml instruction record")
+        return cls(**d)
+
+    def to_dict(self) -> dict:
+        return dataclasses.asdict(self)
+
+
+# --- bench record (results/raw/bench/<session_id>/<config_id>.json) --------------------------
+
+BENCH_BUILDS = ("baseline", "kleidiai")
+
+
+@dataclass
+class BenchRecord:
+    """One llama-bench call (one point, one build). llama-bench's own JSON is kept unchanged."""
+
+    schema_version: int
+    kind: str
+    session_id: str
+    captured_utc: str
+    config_id: str
+    pair_id: str
+    model_alias: str
+    quant: str
+    build: str
+    threads: int
+    test: str
+    attempt: int  # 1, or 2 for the re-run of a noisy point (saved as <config_id>__2.json)
+    repetitions: int
+    pair_index: int
+    order_in_pair: int  # 1 if this build ran first in its pair, else 2
+    repo: dict
+    llama_cpp: dict
+    model: dict
+    settings: dict
+    command: list[str]
+    pinning: dict
+    loadavg_before: list[float] | None
+    loadavg_after: list[float] | None
+    wall_seconds: float
+    returncode: int
+    summary: dict  # summarise() of the per-repetition tokens/s samples
+    noisy: bool
+    llama_bench: list  # llama-bench -o json, unchanged
+    stderr_notable: list[str]  # load-log lines that say who owns the weights, warnings, errors
+
+    def __post_init__(self) -> None:
+        from edge_llm import sweep  # local import: keeps this module free of sweep at load time
+
+        w = f"bench record {self.config_id}"
+        _require(self.kind == "bench", f"{w}: kind must be 'bench'")
+        point = sweep.parse_config_id(self.config_id)
+        _require(
+            (point.model, point.quant, point.build, point.threads, point.test)
+            == (self.model_alias, self.quant, self.build, self.threads, self.test),
+            f"{w}: config_id does not match its own fields",
+        )
+        _require(self.pair_id == point.pair_id, f"{w}: pair_id does not match")
+        _require(self.build in BENCH_BUILDS, f"{w}: unknown build")
+        _require(self.attempt in (1, 2), f"{w}: attempt must be 1 or 2")
+        _require(self.order_in_pair in (1, 2), f"{w}: order_in_pair must be 1 or 2")
+        _require(self.returncode == 0, f"{w}: llama-bench exited with {self.returncode}")
+        _require(_is_sha256(self.model.get("sha256")), f"{w}: model sha256 missing or malformed")
+        _require(
+            self.model.get("file_bytes") == self.model.get("table_file_bytes"),
+            f"{w}: model file size differs from its tensor table",
+        )
+        _require(len(self.llama_bench) == 1, f"{w}: expected exactly one llama-bench test")
+        row = self.llama_bench[0]
+        test = sweep.parse_test(self.test)
+        want_pp, want_tg = (test.tokens, 0) if test.kind == "pp" else (0, test.tokens)
+        _require(
+            (row.get("n_prompt"), row.get("n_gen"), row.get("n_depth"))
+            == (want_pp, want_tg, test.depth),
+            f"{w}: llama-bench ran a different test than its config_id says",
+        )
+        _require(row.get("n_threads") == self.threads, f"{w}: llama-bench thread count differs")
+        _require(str(row.get("flash_attn")) == str(self.settings.get("flash_attn")), f"{w}: -fa")
+        _require(
+            str(row.get("cpu_strict")).lower() in ("true", "1"), f"{w}: --cpu-strict was not on"
+        )
+        for key in ("n_batch", "n_ubatch"):
+            _require(row.get(key) == self.settings.get(key), f"{w}: {key} differs from settings")
+        ts = row.get("samples_ts")
+        ns = row.get("samples_ns")
+        _require(
+            isinstance(ts, list)
+            and isinstance(ns, list)
+            and len(ts) == len(ns) == self.repetitions,
+            f"{w}: samples_ts/samples_ns must hold {self.repetitions} repetitions",
+        )
+        _require(all(s > 0 for s in ts) and all(s > 0 for s in ns), f"{w}: non-positive sample")
+        s = summarise(ts)
+        for name in ("median", "q1", "q3", "iqr"):
+            _require(
+                math.isclose(self.summary.get(name, math.nan), s[name], rel_tol=1e-9),
+                f"{w}: summary.{name} does not match the samples",
+            )
+        _require(
+            self.noisy == (s["iqr_over_median"] > NOISY_THRESHOLD),
+            f"{w}: noisy flag disagrees with IQR/median",
+        )
+
+    @classmethod
+    def from_dict(cls, d: dict) -> BenchRecord:
+        _check_keys(cls, d, "bench record")
         return cls(**d)
 
     def to_dict(self) -> dict:

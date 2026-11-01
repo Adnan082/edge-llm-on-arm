@@ -30,6 +30,8 @@ def git(repo, *args):
         ("R  old.py -> results/new.py\n", True),  # the rename's source is outside results/
         ("M Makefile\n", True),  # first line with its leading space stripped by run()
         ("?? results_old/x\n", True),  # only the exact folder is exempt
+        ("?? micro/disasm/peak_sdot.s\n", False),  # `make peak` output, committed with results
+        ("?? micro/peak.cpp\n", True),  # but not the code beside it
     ],
 )
 def test_is_dirty(porcelain, dirty):

@@ -153,8 +153,8 @@ plus the evidence. Null results are results.
 - **Roofline model** in Python; v1 predictions committed before the full sweep starts.
 - **C++ microbenchmarks:**
   - `peak.cpp` — register-only loops of independent `SDOT` / `SMMLA` / FP16 `FMLA` /
-    widening FP16→FP32 `FMLALB`+`FMLALT` instructions; gives `C(t)` for the roofline
-    (ADR-015).
+    widening FP16→FP32 `FMLALB`+`FMLALT` / F32 `FMLA` instructions; gives `C(t)` for the
+    roofline (ADR-015, ADR-020).
   - `dot_int8.cpp` — int8 dot product in five variants: scalar (auto-vectorisation off),
     compiler auto-vectorised, NEON `SDOT`, i8mm `SMMLA` on a 2-row tile (`SMMLA` needs at
     least two rows, which is why it suits prefill rather than decode), and SVE. Each is
@@ -278,7 +278,8 @@ never from measured throughput. Count one multiply-accumulate as 2 operations ev
   `C_sdot`, `C_smmla`, and two for F16, because ggml's F16 path uses different instructions
   in each phase (checked in the source; ADR-015): `C_hfma` for FP16 `FMLA` (prefill:
   llamafile's tinyBLAS) and `C_fmlal` for the widening FP16→FP32 `FMLALB`/`FMLALT` (decode:
-  `ggml_vec_dot_f16`).
+  `ggml_vec_dot_f16`). Plus `C_fma32` for F32 `FMLA`, the ceiling for attention, which ggml
+  computes in F32 (ADR-020).
 - Each model file's tensor table (name, type, shape, bytes), committed to `results/models/`.
   From it: `W_blk`, `N_blk` = bytes and parameter count of all transformer-block weight
   matrices; `W_out`, `N_out` = the same for the output projection (the embedding table, if
@@ -290,23 +291,32 @@ never from measured throughput. Count one multiply-accumulate as 2 operations ev
 **Decode** (one new token at context length `c`):
 
 - `bytes_tok = W_blk + W_out + KV(c)`, with
-  `KV(c) = c × n_layers × 2 × n_kv_heads × head_dim × bytes_per_kv_element`. llama-bench's
-  `tg` test starts from an empty context, so `KV ≈ 0` unless decode-at-depth is measured
-  (§14).
-- `flops_tok = 2 × (N_blk + N_out) + 4 × n_layers × n_heads × head_dim × c`.
-- `predicted_decode_tps = 1 / max(bytes_tok / B(t), flops_tok / C_dec(t))`, where `C_dec`
-  is `C_sdot` for quantised formats (a one-row GEMV cannot use `SMMLA` efficiently) and
-  `C_fmlal` for F16.
+  `KV(c) = c × n_layers × 2 × n_kv_heads × head_dim × bytes_per_kv_element` (F16 cache: 2 B).
+  A `tg` test of `n_gen` tokens after a depth `d` (0 or 2048, ADR-018) uses the average
+  context `c = d + (n_gen − 1) / 2`.
+- Weight FLOPs `2 × (N_blk + N_out)`; attention FLOPs `4 × n_layers × n_heads × head_dim × c`.
+- `t_compute = 2 × (N_blk + N_out) / C_dec(t) + 4 × n_layers × n_heads × head_dim × c /
+  C_fma32(t)`, where `C_dec` is `C_sdot` for quantised formats (every decode GEMV on this CPU
+  uses `SDOT`; checked in the source) and `C_fmlal` for F16.
+- `predicted_decode_tps = 1 / max(bytes_tok / B(t), t_compute)`.
 
 **Prefill** (prompt of `P` tokens, processed in `⌈P / n_ubatch⌉` chunks):
 
-- `flops(P) = 2 × N_blk × P + 2 × N_out × n_logits + 2 × n_layers × n_heads × head_dim × P²`.
-  `n_logits` is the number of tokens whose logits are computed (llama-bench: last token only
-  — verify). The last term assumes causal attention computes only the lower triangle; if
-  masked entries are computed too, double it — check and state which.
-- `bytes(P) = ⌈P / n_ubatch⌉ × W_blk + W_out` (+ KV traffic).
-- `predicted_prefill_tps = P / max(flops(P) / C_pre(t), bytes(P) / B(t))`, where `C_pre` is
-  `max(C_sdot, C_smmla)` for quantised formats and `C_hfma` for F16.
+- Weight FLOPs `F_w(P) = 2 × N_blk × P − 2 × N_ffn_last × (P − n_logits) + 2 × N_out ×
+  n_logits`, with `n_logits` = 1: llama-bench sends each prompt as one batch (P ≤ `n_batch`)
+  and only its last token is an output. The last layer runs its FFN only for output rows, so
+  its FFN weights (`N_ffn_last` = 3 × `n_embd` × `n_ff`) are applied to one token, not P.
+- Attention FLOPs `F_a(P) = 2 × n_layers × n_heads × head_dim × P × (P + 64)`. With flash
+  attention on (ADR-019), ggml computes causal attention in 64 × 64 tiles and skips only
+  fully masked tiles: `P(P + 64)/2` query–key pairs, not the triangle's `P²/2`.
+- `bytes(P) = ⌈P / n_ubatch⌉ × W_blk + W_out`; KV-cache traffic is left out (prefill is
+  compute-bound).
+- `t_compute = F_w(P) / C_pre(t) + F_a(P) / C_fma32(t)`, where `C_pre` is
+  `max(C_sdot, C_smmla)` for quantised formats (every prefill GEMM on this CPU uses `SMMLA`)
+  and `C_hfma` for F16.
+- `predicted_prefill_tps = P / max(t_compute, bytes(P) / B(t))`.
+- Sources for these counts (ADR-020): `ops.cpp:9218-9257` and `common.h:9-10` (tiles),
+  `models/qwen3.cpp:128-131` (last-layer FFN), `common/common.cpp:2326-2338` (outputs).
 
 **Known-answer anchors for tests** (ggml block definitions; re-check `ggml-common.h` at the
 pinned commit): Q4_0 = 18 B per 32 weights = 4.5 bits/weight; Q8_0 = 34 B / 32 = 8.5;
@@ -327,7 +337,9 @@ ceilings.
 thread synchronisation (grows with threads, matters most for small models); non-matmul ops
 (norms, RoPE, softmax); achieved vs peak bandwidth for the kernel's real access pattern;
 load-time format conversion (in the `kleidiai` build Q6_K tensors become 8-bit, so Q4_0 and
-Q4_K_M files read more bytes per token than the file holds; measured in §11).
+Q4_K_M files read more bytes per token than the file holds; measured in §11); attention in
+plain C (on SVE builds the tiled flash-attention kernel's SIMD GEMM is compiled out,
+`simd-gemm.h:8`, so prefill attention runs a scalar triple loop, far below `C_fma32`).
 
 ## 9. Engineering conventions
 
@@ -416,10 +428,19 @@ everything else. If behind by end of Day 7: cut the microbenchmark to scalar vs 
   weights — about +8 % of the small Q4_0 model's bytes per token — from the Q6_K → 8-bit
   conversion. `token_embd` stays memory-mapped everywhere (it is only used for row lookups).
   Source: as above.
-- llama-bench defaults at the pinned commit (Day 2 source reading, `llama-bench.cpp:389-423`,
-  `:2415-2437`): `n_batch` 2048, `n_ubatch` 512, KV cache F16, flash attention `auto`,
-  5 repetitions, one warm-up run. The sweep uses these defaults, written out on every
-  command line (ADR-019); the flash-attention value and the mmap default: `TBD` (Day 3).
+- llama-bench at the pinned commit (source reading, Days 2–3): defaults `n_batch` 2048,
+  `n_ubatch` 512, KV cache F16, 5 repetitions, one unmeasured warm-up (a full prompt run for
+  `pp`, one token for `tg`). Flash attention `auto` resolves to enabled on the CPU backend
+  (`llama-context.cpp:660-663`), so the sweep passes `-fa 1`; load mode `-lm auto` means mmap
+  on the CPU, and each record keeps the `load_mode = mmap` log line. Every setting is written
+  out on every command line (ADR-019; `configs/sweep.yaml`, `bench_settings`). Depth option
+  `-d`: the context is filled outside the timer (`llama-bench.cpp:2447-2484`). Per-repetition
+  samples: `samples_ns` and `samples_ts` (the latter excludes depth tokens). `-C` takes a hex
+  mask (bit i = core i); with `--cpu-strict 1`, thread i runs on core i.
+- Instructions used (source): every quantised decode GEMV uses `SDOT` (ggml's repack and
+  KleidiAI); every quantised prefill GEMM uses `SMMLA`; F16 as in ADR-015. KleidiAI's SVE
+  kernels are not selected, because it reports SVE only for 256-bit vectors
+  (`kleidiai.cpp:327`).
 - Models: `small` = `Qwen/Qwen3-0.6B` @ `c1899de289a04d12100db370d81485cdf75e47ca`, `large` =
   `Qwen/Qwen3-1.7B` @ `70d244cc86ccca08cf5af4e1e306ecf908b1ad5e` (BF16 safetensors, every
   file checked against the Hub's hashes). F16 made with the pinned `convert_hf_to_gguf.py`;
@@ -443,8 +464,8 @@ everything else. If behind by end of Day 7: cut the microbenchmark to scalar vs 
   defined is settled before the Day-3 pilot. Known recording bug: `process_cpus` reads `[0]`
   at every t (it is read after pinning); `taskset_cpus` is the true CPU set. Source:
   `results/raw/bandwidth/2026-11-01T1727Z_{start,end}.json`.
-- Measured peaks `C(t)` (`SDOT`, `SMMLA`, FP16 `FMLA`, `FMLALB`/`FMLALT`; per thread count;
-  method): `TBD` (Day 3).
+- Measured peaks `C(t)` (`SDOT`, `SMMLA`, FP16 `FMLA`, `FMLALB`/`FMLALT`, F32 `FMLA`; per
+  thread count; method): `TBD` (Day 3).
 
 ## 12. README headline structure
 
@@ -511,6 +532,7 @@ everything else. If behind by end of Day 7: cut the microbenchmark to scalar vs 
 | ADR-017 | 2026-11-01 | `B(t)` = the best median over 1, 2, 4 and 8 interleaved read streams per thread; the one-stream result `B₁(t)` is kept as a reference | Day 2 surprise: a STREAM-style triad moved more data than the one-stream read test (41 vs 27 GB/s at 1 thread; 234 vs 173 at 8), so one stream per core does not reach the memory limit, and a ceiling below what llama.cpp can reach would push ratios above 1. If llama.cpp only reaches `B₁(t)`, that gap is itself a finding | Keep the one-stream number (probably not the ceiling); use the triad (it also writes, while decode only reads) |
 | ADR-018 | 2026-11-01 | Decode is also measured at a context depth of 2048 tokens (llama-bench's depth option; verify), at t ∈ {1, 8}, for every model, format and build; closes §14 item 4 | With an F16 KV cache, depth 2048 adds `KV(c)` = 224 MiB per token for both models (2048 × 28 layers × 2 × 8 KV heads × 128 × 2 B), about 63 % of the small Q4_0 model's weight bytes, so it tests the KV term that empty-context decode cannot | Empty context only (KV term untested); every thread count (twice the cost for little extra information) |
 | ADR-019 | 2026-11-01 | Fixed llama-bench settings = its defaults at the pinned commit (§11), written out on every command line; flash attention fixed to the value `auto` resolves to on this CPU (from the source, before the pilot) | Defaults are what users run; spelling them out stops a different llama-bench version, or `auto`, from changing them silently | Tuned settings (would answer a different question) |
+| ADR-020 | 2026-11-01 | §8 v1 finalised from the Day 3 source reading, before the pilot: compute time = weight FLOPs at the weight format's peak + attention FLOPs at a new F32 `FMLA` peak `C_fma32`; attention counted as `P(P + 64)/2` pairs (64 × 64 flash-attention tiles); the last layer's FFN for the output token only; `n_logits` = 1; decode uses the average context `d + (n_gen − 1)/2` | ggml computes attention in F32 (K and V tiles are converted to F32), so an int8 or FP16 peak is not its ceiling; the counts are what the code does (sources in §8). On SVE builds that attention runs a scalar loop (`simd-gemm.h:8`), which v1 treats as a named gap rather than a ceiling | One ceiling for all prefill FLOPs (would bound F32 attention by the int8 peak); counting the triangle only (undercounts attention by 50 % at P = 128) |
 
 ## 16. Progress Log
 
@@ -547,5 +569,7 @@ everything else. If behind by end of Day 7: cut the microbenchmark to scalar vs 
   on the data. Next: Day 3.
 - 2026-11-01 — Before the Day-3 pilot: `B(t)` defined as the best of 1–8 read streams per
   thread (ADR-017); decode also at depth 2048 (ADR-018, closes §14); llama-bench defaults
-  written out explicitly (ADR-019). §8 is final once Day 3's source checks (attention mask,
-  `n_logits`, flash attention) are recorded. Next: Day 3.
+  written out explicitly (ADR-019). §8 finalised from Day 3's source reading (ADR-020):
+  attention gets its own F32 ceiling and is counted in 64 × 64 tiles. Source finding worth
+  the report: on SVE machines like Axion, llama.cpp's flash attention for prompts falls back
+  to a plain C loop, because its SIMD helper does not support SVE yet. Next: the Day-3 pilot.

@@ -22,10 +22,45 @@ prefill_prompt_lengths: [128, 512, 2048]
 decode_tokens: 128   # llama-bench tg128, from an empty context
 batch: 1
 repetitions: 5
+slow_repetitions: 3   # for the points in slow_points (CLAUDE.md §7.4)
 
-# CLAUDE.md §14 item 4: decode from an empty context only, or also at one depth?
-decode_depth: TBD
+# ADR-018: decode is also measured after a context of this many tokens, at these thread counts
+# only. llama-bench fills the context before the timer starts (Day 3 source reading).
+decode_depth: 2048
+decode_depth_threads: [1, 8]
 
-slow_points: []      # points run with 3 repetitions; each needs a reason
+# ADR-019: llama-bench's own defaults at the pinned commit, written out on every command line so a
+# different llama-bench build, or `auto`, cannot change them silently. Day 3 source reading
+# (tools/llama-bench/llama-bench.cpp:387-423, src/llama-context.cpp:660, ggml-cpu.cpp:400):
+#   flash_attn: `auto` resolves to enabled on the CPU backend (the CPU supports FLASH_ATTN_EXT)
+#   load_mode:  `auto` resolves to mmap on the CPU backend (mmap_support = true); kept as `auto`,
+#               the default, and the load log's `load_mode = mmap` line is stored in every record
+#   warm-up:    one unmeasured run per test, on by default; we never pass --no-warmup
+bench_settings:
+  n_batch: 2048
+  n_ubatch: 512
+  type_k: f16
+  type_v: f16
+  flash_attn: 1
+  load_mode: auto
+  repack: 1
+  poll: 50
+  prio: 0
+  delay: 0
+
+# Points run with slow_repetitions instead of repetitions. Each: {point: <pair_id>, reason}.
+# Chosen before any full-sweep result exists (CLAUDE.md §7 item 10). Day 3 pilot: the slowest
+# full-sweep point, timed to bound the sweep's wall time; revisit after reading the estimate.
+slow_points:
+  - {point: large_F16_t1_pp2048, reason: "slowest full-sweep point (large model, F16, 1 thread, 2048-token prompt)"}
 pruned_points: []    # {point, reason}; only before any full-sweep results exist (§7 item 10)
-pilot: TBD           # Day 3
+
+# Day 3 pilot (CLAUDE.md §10): small model, F16 and Q4_0, both builds, t in {1, 8}, plus the
+# slowest full-sweep point to time the worst case.
+pilot:
+  models: [small]
+  quants: [F16, Q4_0]
+  threads: [1, 8]
+  tests: [pp512, tg128, tg128d2048]
+  extra_points:
+    - {model: large, quant: F16, threads: 1, test: pp2048}
