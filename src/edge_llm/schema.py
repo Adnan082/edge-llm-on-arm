@@ -22,6 +22,8 @@ SCHEMA_VERSION = 1
 ROLES = ("blk", "out", "emb", "other")
 BANDWIDTH_KERNELS = ("read", "triad")
 READ_STREAMS = (1, 2, 4, 8)  # interleaved read streams per thread (ADR-017)
+READ_ACCUMULATORS = (8, 16)  # vector accumulators in the read loop (ADR-021)
+MIN_L1_REP_SECONDS = 0.010  # a timed repetition of the L1 validity check lasts at least this
 MIN_BANDWIDTH_REPS = 20  # CLAUDE.md-style rule from the Day 2 brief: at least 20 timed repeats
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -187,17 +189,31 @@ class BandwidthPoint:
     streams: int = 1  # read streams per thread (k); the triad ignores it
     hugepage: bool = False  # diagnostic run with madvise(MADV_HUGEPAGE); never part of B(t)
     anon_huge_kb: int | None = None  # AnonHugePages after the first touch
+    # Added with ADR-021. Day 2 records used 8 accumulators and had no L1 runs.
+    accumulators: int = 8  # vector accumulators in the read loop; 0 for the triad
+    l1: bool = False  # the validity check: a 32 KiB buffer read in repeated passes
+    passes: int = 1  # passes over the buffer in one timed repetition
 
     def __post_init__(self) -> None:
-        w = f"bandwidth point {self.kernel} t={self.threads} k={self.streams}"
+        w = f"bandwidth point {self.kernel} t={self.threads} acc={self.accumulators} k={self.streams}"
         _require(self.kernel in BANDWIDTH_KERNELS, f"{w}: unknown kernel")
         _require(self.threads > 0, f"{w}: threads must be positive")
         if self.kernel == "read":
             _require(self.streams in READ_STREAMS, f"{w}: streams must be in {READ_STREAMS}")
+            _require(
+                self.accumulators in READ_ACCUMULATORS,
+                f"{w}: accumulators must be in {READ_ACCUMULATORS}",
+            )
         if self.hugepage:
             _require(
                 self.kernel == "read" and self.streams == 1,
                 f"{w}: huge-page diagnostics are one-stream read runs",
+            )
+        if self.l1:
+            _require(self.kernel == "read" and not self.hugepage, f"{w}: bad L1 run")
+            _require(
+                self.bytes_per_rep == self.buffer_bytes * self.passes,
+                f"{w}: bytes_per_rep != buffer_bytes x passes",
             )
         _require(
             self.reps_timed >= MIN_BANDWIDTH_REPS,
@@ -207,6 +223,12 @@ class BandwidthPoint:
         _require(all(s > 0 for s in self.samples_bytes_per_s), f"{w}: non-positive sample")
         _require(self.checksum_ok is True, f"{w}: checksum did not match the known answer")
         _require(self.pinning.get("getcpu_ok") is True, f"{w}: sched_getcpu() pin check failed")
+        if self.l1:  # the shortest repetition is the one with the highest rate
+            shortest = self.bytes_per_rep / max(self.samples_bytes_per_s)
+            _require(
+                shortest >= MIN_L1_REP_SECONDS,
+                f"{w}: a timed L1 repetition lasted {shortest * 1e3:.1f} ms, under 10 ms",
+            )
         # The summary must be recomputable from the samples (spec §9: every number traceable).
         s = summarise(self.samples_bytes_per_s)
         for name in ("median", "q1", "q3", "iqr", "max"):
@@ -232,32 +254,49 @@ class BandwidthRecord:
     binary: dict
     host: dict
     points: list[BandwidthPoint]
-    acc_check: dict
     objdump_file: str
+    # Day 2 records have acc_check (an accumulator-doubling check, dropped by ADR-021); newer ones
+    # have validity: the per-variant L1 check, the winners and the loop reports.
+    acc_check: dict = field(default_factory=dict)
+    validity: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         _require(self.kind == "bandwidth", f"kind must be 'bandwidth', got {self.kind!r}")
         _require(self.phase in ("start", "end"), f"phase must be start or end: {self.phase!r}")
         _require(self.points, "no bandwidth points")
-        seen = {(p.kernel, p.threads, p.streams, p.hugepage) for p in self.points}
+        seen = {
+            (p.kernel, p.threads, p.accumulators, p.streams, p.hugepage, p.l1) for p in self.points
+        }
         _require(
-            len(seen) == len(self.points), "duplicate (kernel, threads, streams, hugepage) points"
+            len(seen) == len(self.points),
+            "duplicate (kernel, threads, accumulators, streams, hugepage, l1) points",
         )
         _require(
             {k for k, *_ in seen} == set(BANDWIDTH_KERNELS),
             f"expected both kernels {BANDWIDTH_KERNELS}",
         )
-        # Every thread count has the same set of plain read stream counts, k = 1 among them
-        # (a Day 2 record has only k = 1; a Day 3 one has all of READ_STREAMS).
-        by_t: dict[int, set[int]] = {}
+        # Every thread count has the same set of plain 1 GiB read variants, k = 1 among them
+        # (a Day 2 record has the one variant 8 accumulators x 1 stream).
+        by_t: dict[int, set[tuple[int, int]]] = {}
         for p in self.points:
-            if p.kernel == "read" and not p.hugepage:
-                by_t.setdefault(p.threads, set()).add(p.streams)
+            if p.kernel == "read" and not p.hugepage and not p.l1:
+                by_t.setdefault(p.threads, set()).add((p.accumulators, p.streams))
         _require(
-            all(1 in ks for ks in by_t.values())
-            and len({frozenset(ks) for ks in by_t.values()}) == 1,
-            "every thread count needs the same read stream counts, including k = 1",
+            all(any(k == 1 for _, k in vs) for vs in by_t.values())
+            and len({frozenset(vs) for vs in by_t.values()}) == 1,
+            "every thread count needs the same read variants, with a one-stream one",
         )
+        if self.validity:  # every variant has an L1 run at one thread, and the table says so
+            l1 = {(p.accumulators, p.streams) for p in self.points if p.l1 and p.threads == 1}
+            _require(
+                l1 == by_t.get(1, set()) and {p.threads for p in self.points if p.l1} == {1},
+                "the L1 validity runs must cover exactly the 1 GiB variants, at one thread",
+            )
+            rows = self.validity.get("variants") or []
+            _require(
+                {(r["accumulators"], r["streams"]) for r in rows} == l1,
+                "validity table does not list the same variants",
+            )
 
     @classmethod
     def from_dict(cls, d: dict) -> BandwidthRecord:

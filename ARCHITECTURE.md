@@ -99,10 +99,14 @@ the compilers and Python, and clones llama.cpp at the pinned commit into `work/`
 
 - `make bandwidth PHASE=start|end` — `bench/bandwidth/` measures memory speed at every thread
   count with a read-only kernel (the roofline input) and a STREAM-style triad (for
-  comparison). The read kernel runs with k = 1, 2, 4 and 8 interleaved streams per thread
-  (ADR-017): `B(t)` is the best median over k and `B1(t)` the one-stream median;
-  `edge_llm/bandwidth.py` computes both. Huge-page runs at t = 1 and 8 are diagnostics and
-  never enter `B(t)`. Each thread count runs under `taskset -c 0-(t-1)` with thread i pinned
+  comparison). The read kernel has eight variants: 8 or 16 accumulators × k = 1, 2, 4, 8
+  interleaved streams per thread (ADR-017, ADR-021). At one thread every variant also runs on
+  a 32 KiB buffer (fits in L1; repeated passes so a repetition lasts at least 10 ms); a variant
+  is valid if its L1 median is at least 1.5× its 1 GiB median, i.e. the loop itself is not the
+  limit. `B(t)` is the best 1 GiB median over the valid variants, `B1(t)` the best valid one
+  at k = 1, and the winning variant at each t is recorded; the run fails only if no variant is
+  valid. `edge_llm/bandwidth.py` computes all of it. Huge-page runs at t = 1 and 8 are
+  diagnostics and never enter `B(t)`. Each thread count runs under `taskset -c 0-(t-1)` with thread i pinned
   to core i. Sweep sessions run it at their start and end, so drift is visible.
 - `make peak` — `micro/run_peak.py` builds `micro/peak.cpp`, disassembles every hot loop
   into `micro/disasm/` and checks it (expected instruction, expected count, no memory
@@ -190,10 +194,11 @@ Exact fields are defined in `src/edge_llm/schema.py`; this is the overview.
   `roofline.py` and `analyse.py`. One pass over every thread count: kernel, streams per
   thread (k), buffer size, pinning (and the `sched_getcpu()` check), at least 20 samples in
   bytes/s with median, IQR and max, compile flags, load average before/after. Next to it,
-  `..._read_loop.s` is the disassembly of the read loops (16 and 24 accumulators, every k);
-  the record also holds the accumulator check: at one thread and every k, the result with the
-  24 accumulators (the most that fit in registers) must be within 3 % of the 16 the kernel
-  uses, and no loop may touch the stack. Records from before Day 3 have k = 1 only.
+  `..._read_loop.s` is the disassembly of the eight read loops; the record's `validity` holds
+  the per-variant L1 check (L1 median, 1 GiB median, ratio, valid), the winners, and each
+  loop's vector loads and stack accesses (information: GCC may spill at 16 accumulators; only
+  a missing loop or one without vector loads is an error). Records from before ADR-021 have
+  one variant (8 accumulators, k = 1) and an `acc_check` instead.
 - `results/raw/peak/<session_id>.json` — from `micro/run_peak.py`, read by `roofline.py`.
   Per instruction class and thread count: the independent accumulators in the loop, at least
   20 samples in instructions/s and in operations/s, median, IQR and max, the pin check; the

@@ -269,9 +269,10 @@ never from measured throughput. Count one multiply-accumulate as 2 operations ev
 
 - `B(t)`: memory bandwidth at `t` threads from a **read-only** kernel (a vectorised sum over
   a buffer ≥ 4× the last-level cache), because decode reads weights and writes almost
-  nothing. Each thread reads `k` interleaved streams, k ∈ {1, 2, 4, 8}; `B(t)` is the best
-  median over `k` (the real ceiling), and the one-stream result `B₁(t)` is kept as the
-  reference for simple sequential access (ADR-017). The record used is named in
+  nothing. Each thread reads `k` interleaved streams, k ∈ {1, 2, 4, 8}, with 8 or 16
+  accumulators; `B(t)` is the best median over these variants (the real ceiling), and the best
+  one-stream result `B₁(t)` is kept as the reference for simple sequential access (ADR-017,
+  ADR-021). The record used is named in
   `v1.meta.json`. STREAM triad is also measured and reported for comparability; it is not a
   roofline input.
 - `C(t)`: peak throughput at `t` threads from `micro/peak.cpp`, per instruction class:
@@ -533,6 +534,7 @@ everything else. If behind by end of Day 7: cut the microbenchmark to scalar vs 
 | ADR-018 | 2026-11-01 | Decode is also measured at a context depth of 2048 tokens (llama-bench's depth option; verify), at t ∈ {1, 8}, for every model, format and build; closes §14 item 4 | With an F16 KV cache, depth 2048 adds `KV(c)` = 224 MiB per token for both models (2048 × 28 layers × 2 × 8 KV heads × 128 × 2 B), about 63 % of the small Q4_0 model's weight bytes, so it tests the KV term that empty-context decode cannot | Empty context only (KV term untested); every thread count (twice the cost for little extra information) |
 | ADR-019 | 2026-11-01 | Fixed llama-bench settings = its defaults at the pinned commit (§11), written out on every command line; flash attention fixed to the value `auto` resolves to on this CPU (from the source, before the pilot) | Defaults are what users run; spelling them out stops a different llama-bench version, or `auto`, from changing them silently | Tuned settings (would answer a different question) |
 | ADR-020 | 2026-11-01 | §8 v1 finalised from the Day 3 source reading, before the pilot: compute time = weight FLOPs at the weight format's peak + attention FLOPs at a new F32 `FMLA` peak `C_fma32`; attention counted as `P(P + 64)/2` pairs (64 × 64 flash-attention tiles); the last layer's FFN for the output token only; `n_logits` = 1; decode uses the average context `d + (n_gen − 1)/2` | ggml computes attention in F32 (K and V tiles are converted to F32), so an int8 or FP16 peak is not its ceiling; the counts are what the code does (sources in §8). On SVE builds that attention runs a scalar loop (`simd-gemm.h:8`), which v1 treats as a named gap rather than a ceiling | One ceiling for all prefill FLOPs (would bound F32 attention by the int8 peak); counting the triangle only (undercounts attention by 50 % at P = 128) |
+| ADR-021 | 2026-11-01 | Bandwidth kernel validity: `B(t)` = the best median over 8 and 16 accumulators × 1, 2, 4 and 8 streams, counting only variants that read at least 1.5× faster from a 32 KiB (L1) buffer than from 1 GiB; the accumulator-doubling check is dropped | On the VM, 16 accumulators made GCC spill to the stack inside the loop, and 24 broke the loop's shape, so doubling accumulators measured the compiler, not memory (Day 2's 8-accumulator loop is clean). A read test can only under-measure memory speed, because the checksum proves every byte was read, so the fastest valid variant is the best estimate; the L1 headroom shows the loop itself is not the limit | Hand-written assembly read loops (more code to explain); keeping the doubling check (fails for compiler reasons) |
 
 ## 16. Progress Log
 

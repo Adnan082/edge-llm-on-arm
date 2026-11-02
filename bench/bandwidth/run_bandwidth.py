@@ -9,16 +9,19 @@ bytes/s with median, IQR and max, plus the pin check, checksum result, compile f
 average before/after, transparent-hugepage setting and repo state. The disassembly of the read
 loop is saved next to it. Run `start` and `end` around a sitting to see drift (CLAUDE.md §7.5).
 
-The read kernel runs with k = 1, 2, 4 and 8 interleaved streams per thread (ADR-017):
-B(t) = the best median over k, B1(t) = the k = 1 median. As a diagnostic only, k = 1 is also run
-with transparent huge pages at t = 1 and t = 8; those points never enter B(t).
+The read kernel runs as eight variants: 8 or 16 accumulators x k = 1, 2, 4, 8 interleaved streams
+per thread (ADR-017, ADR-021). A read test can only under-measure memory, so the fastest valid
+variant is the best estimate; "valid" is checked at one thread by running every variant on a 32 KiB
+buffer (fits in L1, repeated passes so each timed repetition lasts at least 10 ms) as well as on
+1 GiB: the L1 median must be at least 1.5 times the 1 GiB median, or the loop itself is the limit.
+B(t) = the best 1 GiB median over the valid variants, B1(t) = the best valid one at k = 1, and the
+winning variant at each t is recorded. The run fails only if no variant is valid. As a diagnostic
+only, k = 1 is also run with transparent huge pages at t = 1 and t = 8; those never enter B(t).
 
-Also checks, at one thread and every k, that the read result does not change when the number of
-independent accumulators goes from the 16 the kernel uses to 24, the most that fit in registers
-(within 3 %): if it does, the loop was limited by its add chain and not by memory. The check also
-reads the disassembly of all eight loops (16 and 24 accumulators, four k) and requires that none
-touches the stack, so "fits in registers" is shown and not assumed. A failed check still writes
-the record, then exits non-zero.
+The disassembly of all eight loops is saved next to the record, and each loop's vector loads and
+stack accesses are reported as information (GCC may spill at 16 accumulators); a loop that cannot
+be found, or has no vector loads, is an error. A failed run still writes the record, then exits
+non-zero.
 """
 
 from __future__ import annotations
@@ -34,8 +37,17 @@ from pathlib import Path
 from bench import common
 from bench.common import REPO_ROOT, WORK_DIR
 from edge_llm import peak
-from edge_llm.bandwidth import HUGEPAGE_DIAGNOSTIC_THREADS, STREAM_COUNTS, b_of_t
-from edge_llm.schema import SCHEMA_VERSION, BandwidthRecord
+from edge_llm.bandwidth import (
+    ACCUMULATOR_COUNTS,
+    HUGEPAGE_DIAGNOSTIC_THREADS,
+    L1_BUFFER_BYTES,
+    STREAM_COUNTS,
+    VALID_RATIO,
+    b_of_t,
+    valid_variants,
+    validity_table,
+)
+from edge_llm.schema import SCHEMA_VERSION, BandwidthPoint, BandwidthRecord
 from edge_llm.stats import summarise
 
 SOURCE = REPO_ROOT / "bench" / "bandwidth" / "bandwidth.cpp"
@@ -43,13 +55,10 @@ BINARY = WORK_DIR / "bin" / "bandwidth"
 FLAGS_FILE = WORK_DIR / "bin" / "bandwidth.flags"
 OUT_DIR = common.RESULTS_DIR / "raw" / "bandwidth"
 COMPILE_FLAGS = ["-O3", "-mcpu=native", "-std=c++17", "-fopenmp", "-Wall", "-Wextra"]
-BASE_ACC = 16  # accumulators the read kernel uses at every k
-LARGE_ACC = 24  # the most that fit in registers without spilling (checked in the disassembly)
-ACC_TOLERANCE = 0.03  # more accumulators may move the 1-thread result by <= 3 %
-ACC_CHECK_STREAMS = STREAM_COUNTS  # the accumulator check covers every k
 READ_LOOP_FUNCTIONS = tuple(
-    f"read_slice_acc{a}_k{k}" for a in (BASE_ACC, LARGE_ACC) for k in STREAM_COUNTS
+    f"read_slice_acc{a}_k{k}" for a in ACCUMULATOR_COUNTS for k in STREAM_COUNTS
 )
+ACC_ARG = ",".join(str(a) for a in ACCUMULATOR_COUNTS)
 THP_FILE = "/sys/kernel/mm/transparent_hugepage/enabled"
 STREAMS_ARG = ",".join(str(k) for k in STREAM_COUNTS)
 
@@ -86,6 +95,8 @@ def to_point(run: dict, result: dict) -> dict:
         note = f"{result['acc']} independent accumulators, {streams} read stream(s) per thread"
         if result.get("hugepage"):
             note += ", madvise(MADV_HUGEPAGE): diagnostic only"
+        if result.get("l1"):
+            note += f", 32 KiB buffer x {result.get('passes', 1)} passes: validity check"
     else:
         note = None
     return {
@@ -113,29 +124,15 @@ def to_point(run: dict, result: dict) -> dict:
         "streams": streams,
         "hugepage": bool(result.get("hugepage", False)),
         "anon_huge_kb": result.get("anon_huge_kb"),
-    }
-
-
-def acc_check_summary(run: dict, streams: int = 1) -> dict:
-    """Compare the read result with 16 and 24 accumulators at one stream count."""
-    med = {
-        r["acc"]: summarise(r["samples_bytes_per_s"])["median"]
-        for r in run["results"]
-        if r.get("streams", 1) == streams
-    }
-    ratio = med[LARGE_ACC] / med[BASE_ACC]
-    return {
-        "threads": run["threads"],
-        "streams": streams,
-        "median_bytes_per_s_by_accumulators": {str(k): v for k, v in sorted(med.items())},
-        "ratio_24_over_16": ratio,
-        "tolerance": ACC_TOLERANCE,
-        "pass": abs(ratio - 1.0) <= ACC_TOLERANCE,
+        "accumulators": result["acc"],
+        "l1": bool(result.get("l1", False)),
+        "passes": result.get("passes", 1),
     }
 
 
 def check_read_loop(name: str, objdump_text: str) -> dict:
-    """The hot loop of one read function: found, and no stack access or store in it."""
+    """The hot loop of one read function. Vector loads and stack accesses are information (GCC may
+    spill at 16 accumulators); only a missing loop, or one with no vector loads, is an error."""
     loop = peak.hot_loop(peak.parse_instructions(objdump_text))
     stack = [i for i in loop if re.search(r"\[sp[,\]]", i)]
     stores = [i for i in loop if re.match(r"^(st\w*)\s", i)]
@@ -148,25 +145,37 @@ def check_read_loop(name: str, objdump_text: str) -> dict:
         "vector_loads": vector_loads,
         "stack_accesses": stack,
         "stores": stores,
-        "ok": bool(loop) and not stack and not stores,
+        "ok": bool(loop) and vector_loads > 0,
     }
 
 
-def acc_check_all(run: dict, loops: list[dict]) -> dict:
-    """The accumulator check at every stream count in the run, and the loop checks.
+def winners(points: list, valid: set) -> dict[str, dict]:
+    """The winning variant at each thread count: B(t), B1(t) and which variants gave them."""
+    out = {}
+    for t, b in b_of_t(points, valid).items():
+        out[str(t)] = {
+            "b": b.b,
+            "accumulators": b.accumulators,
+            "streams": b.streams,
+            "b1": b.b1,
+            "b1_accumulators": b.b1_accumulators,
+        }
+    return out
 
-    Passes only if every k is within the tolerance and no loop touches the stack.
-    """
-    present = sorted({r.get("streams", 1) for r in run["results"]})
-    by_k = {str(k): acc_check_summary(run, k) for k in present}
+
+def make_validity(point_dicts: list[dict], loops: list[dict]) -> dict:
+    """The validity part of the record: the per-variant L1 check, the winners, the loop reports."""
+    points = [BandwidthPoint.from_dict(d) for d in point_dicts]
+    table = validity_table(points)
+    valid = valid_variants(table)
     return {
-        "threads": run["threads"],
-        "base_accumulators": BASE_ACC,
-        "large_accumulators": LARGE_ACC,
-        "by_streams": by_k,
+        "threads": 1,
+        "l1_buffer_bytes": L1_BUFFER_BYTES,
+        "min_ratio": VALID_RATIO,
+        "variants": table,
+        "any_valid": bool(valid),
+        "winners": winners(points, valid),
         "loops": loops,
-        "tolerance": ACC_TOLERANCE,
-        "pass": all(c["pass"] for c in by_k.values()) and all(lp["ok"] for lp in loops),
     }
 
 
@@ -190,22 +199,41 @@ def thread_counts() -> list[int]:
 
 
 def print_table(record: BandwidthRecord, threads: list[int]) -> None:
-    b = b_of_t(record.points)
+    valid = valid_variants(record.validity["variants"])
+    b = b_of_t(record.points, valid)
     triad = {p.threads: p for p in record.points if p.kernel == "triad"}
-    hp = {p.threads: p for p in record.points if p.hugepage}
+    hp = {}
+    for p in record.points:
+        if p.hugepage and (p.threads not in hp or p.median > hp[p.threads].median):
+            hp[p.threads] = p
     gb = 1e9
     print(
-        f"{'threads':>7} {'B(t) GB/s':>10} {'best k':>6} {'B1(t) GB/s':>11} {'B/B1':>6}"
-        f" {'triad GB/s':>11} {'k=1 +THP':>9}"
+        f"{'threads':>7} {'B(t) GB/s':>10} {'acc/k':>6} {'B1(t) GB/s':>11} {'acc':>4}"
+        f" {'B/B1':>6} {'triad GB/s':>11} {'k=1 +THP':>9}"
     )
     for t in threads:
+        if t not in b:
+            print(f"{t:>7} {'no valid variant':>10}")
+            continue
         h = f"{hp[t].median / gb:>9.2f}" if t in hp else f"{'-':>9}"
+        b1 = f"{b[t].b1 / gb:>11.2f}" if b[t].b1 is not None else f"{'-':>11}"
+        b1a = b[t].b1_accumulators if b[t].b1_accumulators is not None else "-"
+        ratio = f"{b[t].b / b[t].b1:>6.3f}" if b[t].b1 is not None else f"{'-':>6}"
         print(
-            f"{t:>7} {b[t].b / gb:>10.2f} {b[t].streams:>6} {b[t].b1 / gb:>11.2f}"
-            f" {b[t].b / b[t].b1:>6.3f} {triad[t].median / gb:>11.2f} {h}"
+            f"{t:>7} {b[t].b / gb:>10.2f} {f'{b[t].accumulators}/{b[t].streams}':>6}"
+            f" {b1} {b1a:>4} {ratio} {triad[t].median / gb:>11.2f} {h}"
         )
     for t, p in sorted(hp.items()):
         print(f"  t={t}: AnonHugePages after first touch = {p.anon_huge_kb} kB (0 = no huge pages)")
+    print(f"validity at 1 thread (L1 must be >= {VALID_RATIO}x the 1 GiB median):")
+    print(f"  {'acc':>3} {'k':>2} {'L1 GB/s':>9} {'1 GiB GB/s':>11} {'ratio':>6}")
+    for r in record.validity["variants"]:
+        ratio = f"{r['ratio']:.2f}" if r["ratio"] is not None else "-"
+        print(
+            f"  {r['accumulators']:>3} {r['streams']:>2} {(r['l1_median'] or 0) / gb:>9.1f}"
+            f" {(r['dram_median'] or 0) / gb:>11.1f} {ratio:>6}  "
+            f"{'valid' if r['valid'] else 'INVALID'}"
+        )
 
 
 def main() -> int:
@@ -231,19 +259,26 @@ def main() -> int:
     loadavg_before = common.loadavg()
     points, failed = [], False
     for t in threads:
-        run = run_once(t, ["--kernel", "both", "--streams", STREAMS_ARG, *extra])
+        run = run_once(t, ["--kernel", "both", "--streams", STREAMS_ARG, "--acc", ACC_ARG, *extra])
         failed = failed or run["returncode"] != 0
         points += [to_point(run, r) for r in run["results"]]
     for t in HUGEPAGE_DIAGNOSTIC_THREADS:  # diagnostic only: never part of B(t)
         if t in threads:
-            run = run_once(t, ["--kernel", "read", "--streams", "1", "--hugepage", *extra])
+            run = run_once(
+                t,
+                ["--kernel", "read", "--streams", "1", "--acc", ACC_ARG, "--hugepage", *extra],
+            )
             failed = failed or run["returncode"] != 0
             points += [to_point(run, r) for r in run["results"]]
-    acc_streams = ",".join(str(k) for k in ACC_CHECK_STREAMS)
-    acc_run = run_once(1, ["--acc-check", "--streams", acc_streams, *extra])
+    # the validity check: every variant over a 32 KiB buffer at one thread
+    run = run_once(
+        1, ["--kernel", "read", "--streams", STREAMS_ARG, "--acc", ACC_ARG, "--l1", *extra]
+    )
+    failed = failed or run["returncode"] != 0
+    points += [to_point(run, r) for r in run["results"]]
     disassembly = disassemble_read_loops()
     loops = [check_read_loop(name, text) for name, text in disassembly.items()]
-    acc = acc_check_all(acc_run, loops)
+    validity = make_validity(points, loops)
     loadavg_after = common.loadavg()
 
     record = {
@@ -261,8 +296,8 @@ def main() -> int:
             "small_buffers_test_run": args.small,
         },
         "points": points,
-        "acc_check": acc,
         "objdump_file": "",
+        "validity": validity,
     }
     # Fill in the objdump name once we know the final record name, then validate and write.
     record_path = common.next_free_path(target)
@@ -278,24 +313,18 @@ def main() -> int:
     print(f"wrote {record_path} and {objdump_path.name}")
 
     print_table(validated, threads)
-    for k, c in acc["by_streams"].items():
-        print(
-            f"accumulator check (1 thread, k={k}, {LARGE_ACC} vs {BASE_ACC}): "
-            f"ratio {c['ratio_24_over_16']:.3f}",
-            "PASS" if c["pass"] else "FAIL",
-        )
     for lp in loops:
         print(
             f"  {lp['function']:<20} loop {lp['loop_instructions']:>4} insns, "
             f"{lp['vector_loads']:>3} vector loads, {len(lp['stack_accesses'])} stack accesses, "
-            f"{len(lp['stores'])} stores: {'ok' if lp['ok'] else 'FAILED'}"
+            f"{len(lp['stores'])} stores{'' if lp['ok'] else ': LOOP NOT FOUND OR NO LOADS'}"
         )
-    if not acc["pass"]:
-        print(
-            "the read loop is limited by its add chain, not by memory: do not use B(t) yet",
-            file=sys.stderr,
-        )
-    return 0 if acc["pass"] and not failed else 1
+    if not validity["any_valid"]:
+        print("no read variant is valid: do not use B(t)", file=sys.stderr)
+    if not all(lp["ok"] for lp in loops):
+        print("a read loop could not be found in the disassembly", file=sys.stderr)
+    ok = validity["any_valid"] and all(lp["ok"] for lp in loops) and not failed
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

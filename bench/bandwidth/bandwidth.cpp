@@ -1,15 +1,20 @@
 // Memory bandwidth B(t) for the roofline (CLAUDE.md §8). One thread count per run.
 //
 //   taskset -c 0-<t-1> bandwidth --threads <t> [--kernel read|triad|both] [--reps 30]
-//                                [--streams 1,2,4,8] [--hugepage]
+//                                [--streams 1,2,4,8] [--acc 8,16] [--hugepage] [--l1]
 //
 // Two kernels:
 //   read  - every thread sums its own slice of one big buffer of 64-bit integers with NEON loads.
 //           Decode reads weights and writes almost nothing, so this is the roofline input.
 //           With --streams k the thread splits its slice into k equal parts and each loop step
-//           reads one 256-byte block (16 accumulators) from each part, so k sequential streams advance
-//           (ADR-017: one stream per core does not reach the memory limit). B(t) is the best
-//           median over k; the k = 1 result is kept as the simple-sequential reference.
+//           reads one block (128 bytes with 8 accumulators, 256 with 16) from each part, so k
+//           sequential streams advance together (ADR-017: one stream per core does not reach the
+//           memory limit). A variant is an (accumulators, k) pair. B(t) is the best median over
+//           the variants that pass the validity check of ADR-021, which compares each variant on
+//           a 1 GiB buffer with the same loop on a 32 KiB buffer (--l1: fits in L1, repeated
+//           passes so every timed repetition lasts at least 10 ms). A read test can only
+//           under-measure memory, and a variant that is not clearly faster from L1 is limited
+//           by its own loop.
 //           --hugepage (diagnostic only, never B(t)) asks for transparent huge pages with
 //           madvise(MADV_HUGEPAGE) before the first touch and records how many were granted.
 //   triad - STREAM-style a[i] = b[i] + s*c[i] on doubles, counted as 24 bytes per element (as
@@ -31,6 +36,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -44,7 +50,7 @@
 
 // ---- read kernel ------------------------------------------------------------------------
 // ACC independent vector accumulators, so the loop is limited by the loads and not by the
-// latency of one chain of adds; K streams, each read 2 * ACC elements (256 bytes for ACC = 16)
+// latency of one chain of adds; K streams, each read 2 * ACC elements (128 bytes for ACC = 8)
 // per loop step. n must be a multiple of K * 2 * ACC.
 template <int ACC, int K>
 static inline uint64_t read_slice_impl(const uint64_t* p, size_t n) {
@@ -70,37 +76,36 @@ static inline uint64_t read_slice_impl(const uint64_t* p, size_t n) {
 #endif
 }
 
-// Separate, named, never-inlined copies: the disassembly of the read_slice_acc16_k* loops is
-// committed as evidence of what the timed loops really are. 16 accumulators are the default at
-// every k. The 24-accumulator copies exist only for the accumulator check: 24 is the largest count
-// that fits in registers next to the loaded data and the stream pointers, and run_bandwidth.py
-// checks in the disassembly that neither loop touches the stack.
+// Separate, named, never-inlined copies: the disassembly of every loop is committed as evidence
+// of what the timed loops really are. Whether GCC keeps all accumulators in registers is not
+// assumed (at 16 it may spill): run_bandwidth.py reports vector loads and stack accesses per loop,
+// and the L1 check decides whether a variant is valid.
 #define READ_SLICE(ACC, K)                                                               \
     extern "C" __attribute__((noinline, noclone)) uint64_t read_slice_acc##ACC##_k##K(   \
         const uint64_t* p, size_t n) {                                                   \
         return read_slice_impl<ACC, K>(p, n);                                            \
     }
+READ_SLICE(8, 1)
+READ_SLICE(8, 2)
+READ_SLICE(8, 4)
+READ_SLICE(8, 8)
 READ_SLICE(16, 1)
 READ_SLICE(16, 2)
 READ_SLICE(16, 4)
 READ_SLICE(16, 8)
-READ_SLICE(24, 1)
-READ_SLICE(24, 2)
-READ_SLICE(24, 4)
-READ_SLICE(24, 8)
 
 typedef uint64_t (*read_fn)(const uint64_t*, size_t);
 static read_fn read_fn_for(int acc, int streams) {
 #define PICK(A, K) \
     if (acc == A && streams == K) return read_slice_acc##A##_k##K
+    PICK(8, 1);
+    PICK(8, 2);
+    PICK(8, 4);
+    PICK(8, 8);
     PICK(16, 1);
     PICK(16, 2);
     PICK(16, 4);
     PICK(16, 8);
-    PICK(24, 1);
-    PICK(24, 2);
-    PICK(24, 4);
-    PICK(24, 8);
 #undef PICK
     fprintf(stderr, "unsupported --acc %d with --streams %d\n", acc, streams);
     exit(2);
@@ -121,6 +126,8 @@ struct Result {
     int acc = 0;
     int streams = 0;         // read streams per thread; 0 for triad
     bool hugepage = false;   // madvise(MADV_HUGEPAGE) requested (diagnostic runs only)
+    bool l1 = false;         // 32 KiB buffer, repeated passes (the validity check)
+    uint64_t passes = 1;     // passes over the buffer in one timed repetition
     long anon_huge_kb = -1;  // AnonHugePages after the first touch, -1 if unreadable
     size_t buffer_bytes = 0, bytes_per_rep = 0;
     int warmup = 0, reps = 0;
@@ -165,21 +172,24 @@ static double secs(clk::time_point a, clk::time_point b) {
     return std::chrono::duration<double>(b - a).count();
 }
 
+// l1: the buffer is small (fits in L1), so one pass takes microseconds; the warm-up repetitions
+// set the number of passes so that each timed repetition lasts about 15 ms (never under 10 ms).
 static Result run_read(int t, size_t total_bytes, int warmup, int reps, int acc, int streams,
-                       bool hugepage) {
+                       bool hugepage, bool l1 = false) {
     Result r;
     r.kernel = "read";
     r.acc = acc;
     r.streams = streams;
     r.hugepage = hugepage;
-    r.warmup = warmup;
+    r.l1 = l1;
+    r.warmup = l1 ? std::max(warmup, 5) : warmup;
+    warmup = r.warmup;
     r.reps = reps;
     r.cpus.assign(t, -1);
     read_fn fn = read_fn_for(acc, streams);
 
     size_t slice = (total_bytes / sizeof(uint64_t)) / t;
-    // each of up to 8 streams a multiple of 2 * ACC for ACC = 16 and 24 (lcm(32, 48) = 96)
-    slice -= slice % (96 * 8);
+    slice -= slice % (32 * 8);  // each of up to 8 streams a multiple of 2 * the largest ACC
     const size_t m = slice * t;
     r.buffer_bytes = r.bytes_per_rep = m * sizeof(uint64_t);
     uint64_t* buf = (uint64_t*)alloc_pages(r.buffer_bytes, hugepage);
@@ -189,7 +199,9 @@ static Result run_read(int t, size_t total_bytes, int warmup, int reps, int acc,
 
     std::vector<uint64_t> partial(t, 0);
     std::vector<clk::time_point> start(t), end(t);
-    std::vector<char> pin_ok(t, 1);
+    std::vector<char> pin_ok(t, 1), pass_bad(t, 0);
+    uint64_t passes = 1;  // shared; only thread 0 changes it, between two barriers
+    const double target_s = 0.015;
 
 #pragma omp parallel num_threads(t)
     {
@@ -202,18 +214,26 @@ static Result run_read(int t, size_t total_bytes, int warmup, int reps, int acc,
         if (tid == 0) r.anon_huge_kb = anon_huge_kb();
         for (int rep = -warmup; rep < reps; rep++) {
 #pragma omp barrier
+            const uint64_t np = passes;
             start[tid] = clk::now();
             partial[tid] = fn(buf + tid * slice, slice);
+            for (uint64_t pass = 1; pass < np; pass++)  // every pass must give the same sum
+                if (fn(buf + tid * slice, slice) != partial[tid]) pass_bad[tid] = 1;
             end[tid] = clk::now();
 #pragma omp barrier
             if (tid == 0) {
                 uint64_t sum = 0;
                 for (int k = 0; k < t; k++) sum += partial[k];
                 if (sum != expected) r.checksum_ok = false;
-                if (rep >= 0) {
-                    auto s0 = *std::min_element(start.begin(), start.end());
-                    auto e1 = *std::max_element(end.begin(), end.end());
-                    r.samples.push_back((double)r.bytes_per_rep / secs(s0, e1));
+                for (int k = 0; k < t; k++)
+                    if (pass_bad[k]) r.checksum_ok = false;
+                auto s0 = *std::min_element(start.begin(), start.end());
+                auto e1 = *std::max_element(end.begin(), end.end());
+                const double seconds = secs(s0, e1);
+                if (rep >= 0) r.samples.push_back((double)r.buffer_bytes * np / seconds);
+                if (l1 && rep < 0) {  // warm-up: aim the next repetition at target_s
+                    double want = std::ceil((double)np * target_s / seconds);
+                    passes = (uint64_t)std::min(std::max(want, 1.0), 1e8);
                 }
             }
         }
@@ -223,6 +243,8 @@ static Result run_read(int t, size_t total_bytes, int warmup, int reps, int acc,
     }
     for (int k = 0; k < t; k++)
         if (!pin_ok[k]) r.getcpu_ok = false;
+    r.passes = passes;
+    r.bytes_per_rep = r.buffer_bytes * passes;
     free(buf);
     return r;
 }
@@ -292,10 +314,12 @@ static Result run_triad(int t, size_t array_bytes, int warmup, int reps) {
 
 static void print_result(const Result& r, bool last) {
     printf("    {\"kernel\": \"%s\", \"acc\": %d, \"streams\": %d, \"hugepage\": %s, "
+           "\"l1\": %s, \"passes\": %llu, "
            "\"anon_huge_kb\": %ld, \"buffer_bytes\": %zu, \"bytes_per_rep\": %zu, "
            "\"reps_warmup\": %d, \"reps_timed\": %d, \"checksum_ok\": %s, \"getcpu_ok\": %s,\n",
-           r.kernel.c_str(), r.acc, r.streams, r.hugepage ? "true" : "false", r.anon_huge_kb,
-           r.buffer_bytes, r.bytes_per_rep, r.warmup, r.reps, r.checksum_ok ? "true" : "false",
+           r.kernel.c_str(), r.acc, r.streams, r.hugepage ? "true" : "false",
+           r.l1 ? "true" : "false", (unsigned long long)r.passes, r.anon_huge_kb, r.buffer_bytes,
+           r.bytes_per_rep, r.warmup, r.reps, r.checksum_ok ? "true" : "false",
            r.getcpu_ok ? "true" : "false");
     printf("     \"observed_cpus\": [");
     for (size_t i = 0; i < r.cpus.size(); i++) printf("%s%d", i ? ", " : "", r.cpus[i]);
@@ -323,11 +347,12 @@ int main(int argc, char** argv) {
     CPU_ZERO(&allowed);
     sched_getaffinity(0, sizeof(allowed), &allowed);
 
-    int threads = 1, reps = 30, warmup = 3, acc = 16;
+    int threads = 1, reps = 30, warmup = 3;
+    std::vector<int> accs = {16};
     size_t read_mib = 1024, triad_mib = 512;  // 1 GiB read buffer; 3 x 512 MiB for triad
     std::string kernel = "both";
     std::vector<int> streams = {1};
-    bool acc_check = false, hugepage = false;
+    bool hugepage = false, l1 = false;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         auto next = [&]() -> const char* {
@@ -338,30 +363,32 @@ int main(int argc, char** argv) {
         else if (a == "--kernel") kernel = next();
         else if (a == "--reps") reps = atoi(next());
         else if (a == "--warmup") warmup = atoi(next());
-        else if (a == "--acc") acc = atoi(next());
+        else if (a == "--acc") accs = parse_int_list(next());
         else if (a == "--streams") streams = parse_int_list(next());
         else if (a == "--hugepage") hugepage = true;
         else if (a == "--read-mib") read_mib = atoll(next());
         else if (a == "--triad-mib") triad_mib = atoll(next());
         else if (a == "--small") { read_mib = 16; triad_mib = 8; }  // for unit tests only
-        else if (a == "--acc-check") acc_check = true;
+        else if (a == "--l1") l1 = true;  // the validity check: 32 KiB buffer, repeated passes
         else { fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
-    if (threads < 1 || reps < 1 || streams.empty()) {
-        fprintf(stderr, "bad --threads/--reps/--streams\n");
+    if (threads < 1 || reps < 1 || streams.empty() || accs.empty()) {
+        fprintf(stderr, "bad --threads/--reps/--streams/--acc\n");
         return 2;
     }
     omp_set_dynamic(0);
 
     std::vector<Result> results;
-    if (acc_check) {  // read kernel with 16 and 24 accumulators, at each requested stream count
-        for (int k : streams)
-            for (int a : {16, 24})
-                results.push_back(run_read(threads, read_mib << 20, warmup, reps, a, k, false));
+    if (l1) {  // every requested variant over a 32 KiB buffer per thread
+        for (int ac : accs)
+            for (int k : streams)
+                results.push_back(run_read(threads, 32 << 10, warmup, reps, ac, k, false, true));
     } else {
         if (kernel == "read" || kernel == "both")
-            for (int k : streams)
-                results.push_back(run_read(threads, read_mib << 20, warmup, reps, acc, k, hugepage));
+            for (int ac : accs)
+                for (int k : streams)
+                    results.push_back(
+                        run_read(threads, read_mib << 20, warmup, reps, ac, k, hugepage));
         if ((kernel == "triad" || kernel == "both") && !hugepage)
             results.push_back(run_triad(threads, triad_mib << 20, warmup, reps));
     }

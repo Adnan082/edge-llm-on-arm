@@ -61,11 +61,13 @@ def test_k_stream_reads_reproduce_the_checksum_on_the_right_cores(threads):
     run_bandwidth.ensure_binary()
     out, code = run_program(
         run_bandwidth.BINARY, f"0-{threads - 1}",
-        ["--threads", str(threads), "--kernel", "read", "--streams", "1,2,4,8", "--small",
-         "--reps", "3", "--warmup", "1"],
+        ["--threads", str(threads), "--kernel", "read", "--streams", "1,2,4,8", "--acc", "8,16",
+         "--small", "--reps", "3", "--warmup", "1"],
     )  # fmt: skip
     assert code == 0
-    assert [r["streams"] for r in out["results"]] == [1, 2, 4, 8]
+    assert [(r["acc"], r["streams"]) for r in out["results"]] == [
+        (a, k) for a in (8, 16) for k in (1, 2, 4, 8)
+    ]
     for r in out["results"]:
         assert r["checksum_ok"], f"k={r['streams']}: the sum of the buffer is wrong"
         assert r["getcpu_ok"] and r["observed_cpus"] == list(range(threads))
@@ -95,25 +97,36 @@ def test_process_cpus_is_the_set_the_process_started_with():
         assert out["process_cpus"] == list(range(t))
 
 
-def test_accumulator_check_covers_every_k_and_the_loops_keep_to_registers():
+def test_l1_validity_runs_report_passes_that_last_at_least_10_ms():
     run_bandwidth.ensure_binary()
     out, code = run_program(
         run_bandwidth.BINARY, "0",
-        ["--threads", "1", "--acc-check", "--streams", "1,2,4,8", "--small", "--reps", "3",
-         "--warmup", "1"],
+        ["--threads", "1", "--kernel", "read", "--l1", "--streams", "1,2,4,8", "--acc", "8,16",
+         "--reps", "3"],
     )  # fmt: skip
     assert code == 0
-    assert sorted((r["streams"], r["acc"]) for r in out["results"]) == [
-        (k, a) for k in (1, 2, 4, 8) for a in (16, 24)
+    assert sorted((r["acc"], r["streams"]) for r in out["results"]) == [
+        (a, k) for a in (8, 16) for k in (1, 2, 4, 8)
     ]
+    for r in out["results"]:
+        assert r["l1"] is True and r["buffer_bytes"] == 32768 and r["checksum_ok"]
+        assert r["passes"] >= 1 and r["bytes_per_rep"] == r["buffer_bytes"] * r["passes"]
+        shortest = r["bytes_per_rep"] / max(r["samples_bytes_per_s"])
+        assert shortest >= 0.010, f"acc={r['acc']} k={r['streams']}: {shortest * 1e3:.1f} ms"
+
+
+def test_all_eight_read_loops_are_found_in_the_disassembly():
+    """Information, not a limit: stack accesses are printed; a missing loop or no loads fails."""
+    run_bandwidth.ensure_binary()
     loops = [
         run_bandwidth.check_read_loop(name, text)
         for name, text in run_bandwidth.disassemble_read_loops().items()
     ]
-    for loop in loops:  # 24 accumulators fit in registers: no spill, no store in any loop
+    assert len(loops) == 8
+    for loop in loops:
+        print(loop["function"], loop["loop_instructions"], loop["vector_loads"],
+              len(loop["stack_accesses"]))  # fmt: skip
         assert loop["ok"], loop
-    checked = run_bandwidth.acc_check_all(out, loops)
-    assert set(checked["by_streams"]) == {"1", "2", "4", "8"}
 
 
 # --- llama-bench accepts the command we built ----------------------------------------------
