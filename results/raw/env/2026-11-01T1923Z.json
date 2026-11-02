@@ -1,0 +1,328 @@
+{
+  "session_id": "2026-11-01T1923Z",
+  "phase": "start",
+  "captured_utc": "2026-11-01T19:23:51+00:00",
+  "machine": {
+    "machine_type": "c4a-highcpu-8",
+    "zone": "us-central1-b",
+    "hostname": "edge-llm-vm",
+    "note": "machine_type/zone are null when the GCE metadata server is unreachable"
+  },
+  "os": {
+    "platform": "Linux-7.0.0-1014-gcp-aarch64-with-glibc2.39",
+    "kernel": "7.0.0-1014-gcp",
+    "uname": "Linux edge-llm-vm 7.0.0-1014-gcp #14~24.04.1-Ubuntu SMP PREEMPT Fri Sep 18 00:58:55 UTC 2026 aarch64 aarch64",
+    "machine_arch": "aarch64",
+    "os_release": "PRETTY_NAME=\"Ubuntu 24.04.5 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"24.04\"\nVERSION=\"24.04.5 LTS (Noble Numbat)\"\nVERSION_CODENAME=noble\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=noble\nLOGO=ubuntu-logo"
+  },
+  "cpu": {
+    "logical_cpus": 8,
+    "threads_per_core": "1",
+    "lscpu_text": "Architecture:                            aarch64\nCPU op-mode(s):                          64-bit\nByte Order:                              Little Endian\nCPU(s):                                  8\nOn-line CPU(s) list:                     0-7\nVendor ID:                               ARM\nModel name:                              Neoverse-V2\nModel:                                   1\nThread(s) per core:                      1\nCore(s) per socket:                      8\nSocket(s):                               1\nStepping:                                r0p1\nBogoMIPS:                                2000.00\nFlags:                                   fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 sm3 sm4 asimddp sha512 sve asimdfhm dit uscat ilrcpc flagm sb paca pacg dcpodp sve2 sveaes svepmull svebitperm svesha3 svesm4 flagm2 frint svei8mm svebf16 i8mm bf16 dgh rng bti\nL1d cache:                               512 KiB (8 instances)\nL1i cache:                               512 KiB (8 instances)\nL2 cache:                                16 MiB (8 instances)\nL3 cache:                                80 MiB (1 instance)\nNUMA node(s):                            1\nNUMA node0 CPU(s):                       0-7\nVulnerability Gather data sampling:      Not affected\nVulnerability Ghostwrite:                Not affected\nVulnerability Indirect target selection: Not affected\nVulnerability Itlb multihit:             Not affected\nVulnerability L1tf:                      Not affected\nVulnerability Mds:                       Not affected\nVulnerability Meltdown:                  Not affected\nVulnerability Mmio stale data:           Not affected\nVulnerability Old microcode:             Not affected\nVulnerability Reg file data sampling:    Not affected\nVulnerability Retbleed:                  Not affected\nVulnerability Spec rstack overflow:      Not affected\nVulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl\nVulnerability Spectre v1:                Mitigation; __user pointer sanitization\nVulnerability Spectre v2:                Mitigation; CSV2, BHB\nVulnerability Srbds:                     Not affected\nVulnerability Tsa:                       Not affected\nVulnerability Tsx async abort:           Not affected\nVulnerability Vmscape:                   Not affected",
+    "lscpu_json": {
+      "lscpu": [
+        {
+          "field": "Architecture:",
+          "data": "aarch64"
+        },
+        {
+          "field": "CPU op-mode(s):",
+          "data": "64-bit"
+        },
+        {
+          "field": "Byte Order:",
+          "data": "Little Endian"
+        },
+        {
+          "field": "CPU(s):",
+          "data": "8"
+        },
+        {
+          "field": "On-line CPU(s) list:",
+          "data": "0-7"
+        },
+        {
+          "field": "Vendor ID:",
+          "data": "ARM"
+        },
+        {
+          "field": "Model name:",
+          "data": "Neoverse-V2"
+        },
+        {
+          "field": "Model:",
+          "data": "1"
+        },
+        {
+          "field": "Thread(s) per core:",
+          "data": "1"
+        },
+        {
+          "field": "Core(s) per socket:",
+          "data": "8"
+        },
+        {
+          "field": "Socket(s):",
+          "data": "1"
+        },
+        {
+          "field": "Stepping:",
+          "data": "r0p1"
+        },
+        {
+          "field": "BogoMIPS:",
+          "data": "2000.00"
+        },
+        {
+          "field": "Flags:",
+          "data": "fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 sm3 sm4 asimddp sha512 sve asimdfhm dit uscat ilrcpc flagm sb paca pacg dcpodp sve2 sveaes svepmull svebitperm svesha3 svesm4 flagm2 frint svei8mm svebf16 i8mm bf16 dgh rng bti"
+        },
+        {
+          "field": "L1d cache:",
+          "data": "512 KiB (8 instances)"
+        },
+        {
+          "field": "L1i cache:",
+          "data": "512 KiB (8 instances)"
+        },
+        {
+          "field": "L2 cache:",
+          "data": "16 MiB (8 instances)"
+        },
+        {
+          "field": "L3 cache:",
+          "data": "80 MiB (1 instance)"
+        },
+        {
+          "field": "NUMA node(s):",
+          "data": "1"
+        },
+        {
+          "field": "NUMA node0 CPU(s):",
+          "data": "0-7"
+        },
+        {
+          "field": "Vulnerability Gather data sampling:",
+          "data": "Not affected"
+        },
+        {
+          "field": "Vulnerability Ghostwrite:",
+          "data": "Not affected"
+        },
+        {
+          "field": "Vulnerability Indirect target selection:",
+          "data": "Not affected"
+        },
+        {
+          "field": "Vulnerability Itlb multihit:",
+          "data": "Not affected"
+        },
+        {
+          "field": "Vulnerability L1tf:",
+          "data": "Not affected"
+        },
+        {
+          "field": "Vulnerability Mds:",
+          "data": "Not affected"
+        },
+        {
+          "field": "Vulnerability Meltdown:",
+          "data": "Not affected"
+        },
+        {
+          "field": "Vulnerability Mmio stale data:",
+          "data": "Not affected"
+        },
+        {
+          "field": "Vulnerability Old microcode:",
+          "data": "Not affected"
+        },
+        {
+          "field": "Vulnerability Reg file data sampling:",
+          "data": "Not affected"
+        },
+        {
+          "field": "Vulnerability Retbleed:",
+          "data": "Not affected"
+        },
+        {
+          "field": "Vulnerability Spec rstack overflow:",
+          "data": "Not affected"
+        },
+        {
+          "field": "Vulnerability Spec store bypass:",
+          "data": "Mitigation; Speculative Store Bypass disabled via prctl"
+        },
+        {
+          "field": "Vulnerability Spectre v1:",
+          "data": "Mitigation; __user pointer sanitization"
+        },
+        {
+          "field": "Vulnerability Spectre v2:",
+          "data": "Mitigation; CSV2, BHB"
+        },
+        {
+          "field": "Vulnerability Srbds:",
+          "data": "Not affected"
+        },
+        {
+          "field": "Vulnerability Tsa:",
+          "data": "Not affected"
+        },
+        {
+          "field": "Vulnerability Tsx async abort:",
+          "data": "Not affected"
+        },
+        {
+          "field": "Vulnerability Vmscape:",
+          "data": "Not affected"
+        }
+      ]
+    },
+    "features": [
+      "fp",
+      "asimd",
+      "evtstrm",
+      "aes",
+      "pmull",
+      "sha1",
+      "sha2",
+      "crc32",
+      "atomics",
+      "fphp",
+      "asimdhp",
+      "cpuid",
+      "asimdrdm",
+      "jscvt",
+      "fcma",
+      "lrcpc",
+      "dcpop",
+      "sha3",
+      "sm3",
+      "sm4",
+      "asimddp",
+      "sha512",
+      "sve",
+      "asimdfhm",
+      "dit",
+      "uscat",
+      "ilrcpc",
+      "flagm",
+      "sb",
+      "paca",
+      "pacg",
+      "dcpodp",
+      "sve2",
+      "sveaes",
+      "svepmull",
+      "svebitperm",
+      "svesha3",
+      "svesm4",
+      "flagm2",
+      "frint",
+      "svei8mm",
+      "svebf16",
+      "i8mm",
+      "bf16",
+      "dgh",
+      "rng",
+      "bti"
+    ],
+    "key_flags": {
+      "asimd": true,
+      "asimddp": true,
+      "asimdhp": true,
+      "bf16": true,
+      "i8mm": true,
+      "sve": true,
+      "sve2": true,
+      "sme": false,
+      "sme2": false
+    },
+    "governor": "not exposed"
+  },
+  "sve_vector_length": {
+    "prctl_bits": 128,
+    "default_bits": 128,
+    "note": null
+  },
+  "memory": {
+    "mem_total_kb": 16329204
+  },
+  "compilers": {
+    "gcc": "gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+    "g++": "g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+    "clang": null,
+    "cmake": "cmake version 3.28.3",
+    "make": "GNU Make 4.3",
+    "ld": "GNU ld (GNU Binutils for Ubuntu) 2.42",
+    "python": "3.12.3"
+  },
+  "repo": {
+    "commit": "883f2522022bc828b2b0aca528fa42499d9aac01",
+    "dirty": false
+  },
+  "llama_cpp": {
+    "commit": "ddf48f85c933c1f438212a02eb21e7b001d2d37d",
+    "dirty": false
+  },
+  "builds": {
+    "baseline": {
+      "dir": "work/build-baseline",
+      "cmake_flags": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+        "CMAKE_CXX_FLAGS": "",
+        "CMAKE_C_COMPILER": "/usr/bin/cc",
+        "CMAKE_C_FLAGS": "",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "GGML_CCACHE": "ON",
+        "GGML_CPU_ARM_ARCH": "",
+        "GGML_CPU_KLEIDIAI": "OFF",
+        "GGML_CPU_REPACK": "ON",
+        "GGML_LLAMAFILE": "ON",
+        "GGML_NATIVE": "ON",
+        "GGML_OPENMP": "ON",
+        "LLAMA_OPENSSL": "ON"
+      },
+      "version_output": "version: 0.8.0-dev (build 12024, commit ddf48f85c)\nbuilt with GNU 13.3.0 for Linux aarch64",
+      "system_info_line": "system_info: n_threads = 8 (n_threads_batch = 8) / 8 | CPU : NEON = 1 | ARM_FMA = 1 | FP16_VA = 1 | MATMUL_INT8 = 1 | SVE = 1 | DOTPROD = 1 | SVE_CNT = 16 | OPENMP = 1 | REPACK = 1 |"
+    },
+    "kleidiai": {
+      "dir": "work/build-kleidiai",
+      "cmake_flags": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+        "CMAKE_CXX_FLAGS": "",
+        "CMAKE_C_COMPILER": "/usr/bin/cc",
+        "CMAKE_C_FLAGS": "",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "GGML_CCACHE": "ON",
+        "GGML_CPU_ARM_ARCH": "",
+        "GGML_CPU_KLEIDIAI": "ON",
+        "GGML_CPU_REPACK": "ON",
+        "GGML_LLAMAFILE": "ON",
+        "GGML_NATIVE": "ON",
+        "GGML_OPENMP": "ON",
+        "LLAMA_OPENSSL": "ON"
+      },
+      "version_output": "version: 0.8.0-dev (build 12024, commit ddf48f85c)\nbuilt with GNU 13.3.0 for Linux aarch64",
+      "system_info_line": "system_info: n_threads = 8 (n_threads_batch = 8) / 8 | CPU : NEON = 1 | ARM_FMA = 1 | FP16_VA = 1 | MATMUL_INT8 = 1 | SVE = 1 | DOTPROD = 1 | SVE_CNT = 16 | OPENMP = 1 | KLEIDIAI = 1 | REPACK = 1 |"
+    }
+  },
+  "model_sha256": {
+    "large_F16.gguf": "cbe12cc9edb49714def6ccaa32a935b3d968e2d7bfeedd158dada0b80fd58942",
+    "large_Q4_0.gguf": "a3e5d5a6b411f27a626688d8ac2185b7c0f75f208e41adfa26903e389faccd08",
+    "large_Q4_K_M.gguf": "67e78b168943871ba5bbfb8d24b545c67465dbf88391ef4046f85bea95fd5592",
+    "large_Q8_0.gguf": "a3ffed53cbfb1f48aeb275389a540821c8a0689c997c0b1f92b35d21ac281c61",
+    "small_F16.gguf": "2768730ec3757a58e06b95a05c9bc731edae2288a3ac3a4573e59dd0dbd66036",
+    "small_Q4_0.gguf": "cc7c0da400883a961ab69fc4637357bbfabd092d8ff2478d46f6b6449bd285ee",
+    "small_Q4_K_M.gguf": "d719daa39db7f04677be396f146414c7f2a1c7fa12b0a34080e43decc1666c6c",
+    "small_Q8_0.gguf": "8c59444c5d0e9a9e51d5e51cb6b0fa80e6243845a14361e7c3d26ab13173dcab"
+  },
+  "loadavg_1_5_15": [
+    0.04052734375,
+    0.0283203125,
+    0.0048828125
+  ]
+}
