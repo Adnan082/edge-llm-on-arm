@@ -126,13 +126,14 @@ def check_disassembly(binary: Path, disasm_dir: Path = DISASM_DIR) -> dict:
         for acc in peak.LADDER_ACCUMULATORS:
             name = f"peak_{cls}_a{acc}"
             text = objdump_function(binary, name)
-            loop = peak.hot_loop(peak.parse_instructions(text))
+            insns = peak.parse_instructions(text)
+            loop = peak.hot_loop(insns, contains=peak.expected_pattern(cls))
             check = peak.check_loop(cls, loop, acc, acc * INSTR_PER_ACC[cls])
             check["function"] = name
             checks.append(check)
             sections.append(
-                f"# ===== {name}: hot loop = the {len(loop)} instructions ending in the"
-                f" last backward branch =====\n{text}"
+                f"# ===== {name}: hot loop = the {len(loop)} instructions of the innermost"
+                f" conditional backward branch holding the expected instruction =====\n{text}"
             )
         path = disasm_dir / f"peak_{cls}.s"
         disasm_dir.mkdir(parents=True, exist_ok=True)

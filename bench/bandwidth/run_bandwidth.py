@@ -19,7 +19,7 @@ winning variant at each t is recorded. The run fails only if no variant is valid
 only, k = 1 is also run with transparent huge pages at t = 1 and t = 8; those never enter B(t).
 
 The disassembly of all eight loops is saved next to the record, and each loop's vector loads and
-stack accesses are reported as information (GCC may spill at 16 accumulators); a loop that cannot
+stack accesses are reported as information, not as a limit; a loop that cannot
 be found, or has no vector loads, is an error. A failed run still writes the record, then exits
 non-zero.
 """
@@ -58,6 +58,7 @@ COMPILE_FLAGS = ["-O3", "-mcpu=native", "-std=c++17", "-fopenmp", "-Wall", "-Wex
 READ_LOOP_FUNCTIONS = tuple(
     f"read_slice_acc{a}_k{k}" for a in ACCUMULATOR_COUNTS for k in STREAM_COUNTS
 )
+VECTOR_LOAD_PATTERN = r"^(ldr|ldp|ld1)\s+q"  # what the read loop must contain
 ACC_ARG = ",".join(str(a) for a in ACCUMULATOR_COUNTS)
 THP_FILE = "/sys/kernel/mm/transparent_hugepage/enabled"
 STREAMS_ARG = ",".join(str(k) for k in STREAM_COUNTS)
@@ -131,9 +132,10 @@ def to_point(run: dict, result: dict) -> dict:
 
 
 def check_read_loop(name: str, objdump_text: str) -> dict:
-    """The hot loop of one read function. Vector loads and stack accesses are information (GCC may
-    spill at 16 accumulators); only a missing loop, or one with no vector loads, is an error."""
-    loop = peak.hot_loop(peak.parse_instructions(objdump_text))
+    """The hot loop of one read function: the innermost loop holding vector loads. Vector loads and
+    stack accesses are information; only a missing loop, or one with no vector loads, is an error.
+    """
+    loop = peak.hot_loop(peak.parse_instructions(objdump_text), contains=VECTOR_LOAD_PATTERN)
     stack = [i for i in loop if re.search(r"\[sp[,\]]", i)]
     stores = [i for i in loop if re.match(r"^(st\w*)\s", i)]
     vector_loads = sum(

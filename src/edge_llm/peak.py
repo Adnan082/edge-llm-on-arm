@@ -115,20 +115,49 @@ def parse_instructions(objdump_text: str) -> list[tuple[int, str]]:
     return out
 
 
-def hot_loop(insns: Sequence[tuple[int, str]]) -> list[str]:
-    """Instructions from the target of the last backward branch to that branch, inclusive."""
-    for idx in range(len(insns) - 1, -1, -1):
-        addr, text = insns[idx]
-        mnemonic = text.split(" ", 1)[0]
-        if not (mnemonic.startswith("b.") or mnemonic in ("b", "cbnz", "cbz", "tbnz", "tbz")):
+CONDITIONAL_BRANCHES = ("cbz", "cbnz", "tbz", "tbnz")
+
+
+def _is_conditional_branch(text: str) -> bool:
+    mnemonic = text.split(" ", 1)[0]
+    return mnemonic.startswith("b.") or mnemonic in CONDITIONAL_BRANCHES
+
+
+def expected_pattern(instr_class: str) -> str:
+    """One regex that matches any instruction a loop of this class must contain."""
+    return "|".join(f"(?:{pattern})" for pattern, _ in EXPECTED_IN_LOOP[instr_class])
+
+
+def hot_loop(insns: Sequence[tuple[int, str]], contains: str | None = None) -> list[str]:
+    """The instructions of a loop: from the target of a conditional backward branch to it.
+
+    The one place loops are found (peak and bandwidth both use it). A loop ends in a conditional
+    backward branch (b.<cond>, cbz, cbnz, tbz, tbnz). An unconditional `b` that jumps backward is
+    not a loop: GCC uses one for the zero-iteration path that returns to the code after the loop.
+
+    A function can have several loops. With `contains` (a regex), loops holding a matching
+    instruction are preferred; among the candidates the innermost (shortest) wins. If no loop
+    matches, the innermost loop is still returned, so the caller can report what it holds.
+    An empty list means the function has no conditional backward branch at all.
+    """
+    spans = []
+    for addr, text in insns:
+        if not _is_conditional_branch(text):
             continue
         m = _BRANCH_TARGET_RE.search(text)
-        if not m:
-            continue
-        target = int(m.group(1), 16)
-        if target < addr:
-            return [t for a, t in insns if target <= a <= addr]
-    return []
+        if m and int(m.group(1), 16) < addr:
+            spans.append((int(m.group(1), 16), addr))
+    if not spans:
+        return []
+
+    def body(span: tuple[int, int]) -> list[str]:
+        return [t for a, t in insns if span[0] <= a <= span[1]]
+
+    pool = spans
+    if contains:
+        matching = [sp for sp in spans if any(re.search(contains, t) for t in body(sp))]
+        pool = matching or spans
+    return body(min(pool, key=lambda sp: (sp[1] - sp[0], -sp[1])))
 
 
 def check_loop(

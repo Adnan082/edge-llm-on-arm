@@ -1,12 +1,14 @@
 """Peak throughput: operations per instruction, C(t), the hot-loop check and the peak record."""
 
 import copy
+import re
 
 import pytest
 
 from edge_llm import peak
 from edge_llm.schema import GgmlInstructionRecord, PeakPoint, PeakRecord, SchemaError
 from micro import run_peak
+from tests.bench_fixtures import REJECTED_PEAK, disasm_section
 
 # --- the operation counts (CLAUDE.md §8: one multiply-accumulate = 2 operations) --------------
 
@@ -199,15 +201,6 @@ def test_fp16_fmla_counts_one_per_chain_and_matches_only_the_8h_form():
     text = objdump(["nop", "nop"] + insns)
     check = peak.check_loop("fmla_f16", loop_of(text), 8, 8)
     assert check["counts"] == {"fmla .8h": 8} and check["ok"]
-
-
-def test_the_loops_gcc_produced_before_the_inline_asm_fix_are_rejected():
-    """VM result: 45- and 22-instruction loops with none of the expected instruction."""
-    junk = ["mov	v0.16b, v1.16b"] * 20 + ["subs	x0, x0, #0x1", "b.ne	788 <x+0x8>"]
-    text = objdump(["nop", "nop"] + junk)
-    for cls, acc in (("fmla_f16", 8), ("fmlal", 8)):
-        check = peak.check_loop(cls, loop_of(text), acc, acc)
-        assert not check["ok"] and sum(check["counts"].values()) == 0
 
 
 def test_every_class_expects_one_instruction_per_chain():
@@ -474,3 +467,151 @@ def test_the_record_needs_the_attention_evidence_for_both_builds():
     # not found is allowed (a stripped library), and says so
     rec["builds"]["kleidiai"]["flash_attn_tiled"] = {"found": False}
     GgmlInstructionRecord.from_dict(rec)
+
+
+# --- the loop finder: conditional backward branches only ---------------------------------------
+
+
+def loop_function(body_before, loop_body, after, name="f"):
+    """objdump-style text: code, a loop ending in b.ne, then code that ends in an unconditional
+    backward `b` (GCC's zero-iteration path returns to the code after the loop this way)."""
+    lines = [f"0000000000000780 <{name}>:"]
+    addr = 0x780
+    for text in body_before:
+        lines.append(f"  {addr:x}:\t{text}")
+        addr += 4
+    top = addr
+    for text in loop_body:
+        lines.append(f"  {addr:x}:\t{text}")
+        addr += 4
+    lines.append(f"  {addr:x}:\tsubs\tx0, x0, #0x1")
+    addr += 4
+    lines.append(f"  {addr:x}:\tb.ne\t{top:x} <{name}+0x8>")
+    addr += 4
+    after_top = addr
+    for text in after:
+        lines.append(f"  {addr:x}:\t{text.format(target=after_top)}")
+        addr += 4
+    return "\n".join(lines) + "\n"
+
+
+def test_an_unconditional_backward_branch_is_not_a_loop():
+    after = ["fadd\tv0.4s, v1.4s, v2.4s"] * 20 + ["b\t{target:x} <f+0x20>"]
+    text = loop_function(["nop"], ["fmla\tv0.8h, v1.8h, v2.8h"] * 4, after)
+    loop = loop_of(text)
+    assert [i.split(" ")[0] for i in loop].count("fmla") == 4 and len(loop) == 6
+    assert not any(i.startswith("fadd") for i in loop)  # the code after the loop is not in it
+
+
+@pytest.mark.parametrize(
+    "branch", ["b.ne", "b.hi", "cbnz x0,", "cbz x1,", "tbnz w2, #3,", "tbz w2, #3,"]
+)
+def test_every_conditional_form_ends_a_loop(branch):
+    text = "\n".join(
+        [
+            "0000000000000780 <f>:",
+            "  780:\tnop",
+            "  784:\tsdot\tv0.4s, v1.16b, v2.16b",
+            f"  788:\t{branch} 784 <f+0x4>",
+            "  78c:\tret",
+        ]
+    )
+    assert loop_of(text) == ["sdot v0.4s, v1.16b, v2.16b", f"{branch} 784 <f+0x4>"]
+
+
+def test_a_forward_conditional_branch_is_not_a_loop():
+    text = objdump(["cbz\tx0, 790 <f+0x10>", "sdot\tv0.4s, v1.16b, v2.16b", "nop", "nop", "ret"])
+    assert loop_of(text) == []
+
+
+def test_the_innermost_loop_holding_the_expected_instruction_wins():
+    lines = [
+        "0000000000000780 <f>:",
+        "  780:\tmov\tx1, #0x0",
+        "  784:\tfadd\tv9.4s, v9.4s, v9.4s",  # outer loop starts here
+        "  788:\tsdot\tv0.4s, v1.16b, v2.16b",  # inner loop starts here
+        "  78c:\tsdot\tv3.4s, v1.16b, v2.16b",
+        "  790:\tsubs\tx0, x0, #0x1",
+        "  794:\tb.ne\t788 <f+0x8>",
+        "  798:\tsubs\tx1, x1, #0x1",
+        "  79c:\tb.ne\t784 <f+0x4>",
+        "  7a0:\tret",
+    ]
+    text = "\n".join(lines) + "\n"
+    insns = peak.parse_instructions(text)
+    inner = peak.hot_loop(insns, contains=peak.expected_pattern("sdot"))
+    assert len(inner) == 4 and inner[0].startswith("sdot") and inner[-1].startswith("b.ne")
+    assert len(peak.hot_loop(insns)) == 4  # innermost overall is the same loop here
+
+
+def test_a_loop_holding_the_expected_instruction_beats_a_shorter_one_that_does_not():
+    lines = [
+        "0000000000000780 <f>:",
+        "  780:\tnop",
+        "  784:\tsubs\tx2, x2, #0x1",  # a short loop of bookkeeping
+        "  788:\tb.ne\t784 <f+0x4>",
+        "  78c:\tsdot\tv0.4s, v1.16b, v2.16b",
+        "  790:\tsdot\tv3.4s, v1.16b, v2.16b",
+        "  794:\tsubs\tx0, x0, #0x1",
+        "  798:\tb.ne\t78c <f+0xc>",
+        "  79c:\tret",
+    ]
+    insns = peak.parse_instructions("\n".join(lines) + "\n")
+    assert len(peak.hot_loop(insns, contains=peak.expected_pattern("sdot"))) == 4
+    assert len(peak.hot_loop(insns)) == 2  # without a hint the shortest loop is returned
+    # if no loop has the instruction, the innermost loop is returned so the caller can report it
+    assert len(peak.hot_loop(insns, contains=peak.expected_pattern("smmla"))) == 2
+
+
+# --- regression: the real listings from the VM (committed under results/raw/) -----------------
+# The first versions of the checker took the unconditional `b` that ends the zero-iteration path
+# as the loop's end and examined the code after the loop. These are the files that exposed it.
+
+
+def real_loop(file, cls, acc):
+    name = f"peak_{cls}_a{acc}"
+    insns = peak.parse_instructions(disasm_section(REJECTED_PEAK / file, name))
+    return peak.hot_loop(insns, contains=peak.expected_pattern(cls))
+
+
+@pytest.mark.parametrize(("acc", "count"), [(8, 16), (16, 32), (28, 56)])
+def test_the_real_fp16_fmla_loops_hold_two_fmla_per_chain_in_the_first_version(acc, count):
+    loop = real_loop("peak_fmla_f16.s", "fmla_f16", acc)
+    assert sum(1 for i in loop if re.match(r"^fmla\s+v\d+\.8h", i)) == count
+    assert count + 3 <= len(loop) <= count + 6  # the FMLAs, add, cmp, b.ne, a few register moves
+    assert loop[-1].startswith("b.ne")
+
+
+@pytest.mark.parametrize(("acc", "each"), [(8, 4), (16, 8), (28, 14)])
+def test_the_real_fmlal_loops_hold_half_fmlalb_and_half_fmlalt(acc, each):
+    loop = real_loop("peak_fmlal.s", "fmlal", acc)
+    assert sum(1 for i in loop if i.startswith("fmlalb ")) == each
+    assert sum(1 for i in loop if i.startswith("fmlalt ")) == each
+    assert peak.check_loop("fmlal", loop, acc, acc)["ok"]
+
+
+@pytest.mark.parametrize("cls", ["sdot", "smmla", "fma32"])
+@pytest.mark.parametrize("acc", [8, 16, 28])
+def test_the_other_real_loops_hold_one_instruction_per_chain_and_no_memory(cls, acc):
+    loop = real_loop(f"peak_{cls}.s", cls, acc)
+    check = peak.check_loop(cls, loop, acc, acc)
+    assert check["ok"] and sum(check["counts"].values()) == acc
+    assert check["memory_instructions"] == [] and len(loop) == acc + 3
+
+
+def test_the_real_fmla_f16_loop_is_not_the_code_after_it():
+    """The checker used `b 308c` at 0x313c: the 45 instructions after the loop, with no fmla."""
+    text = disasm_section(REJECTED_PEAK / "peak_fmla_f16.s", "peak_fmla_f16_a8")
+    insns = peak.parse_instructions(text)
+    assert any(t.startswith("b ") and a == 0x313C for a, t in insns)  # the unconditional jump
+    loop = real_loop("peak_fmla_f16.s", "fmla_f16", 8)
+    first = next(a for a, t in insns if t == loop[0])
+    assert first == 0x3040 and loop[-1].startswith("b.ne") and "3040" in loop[-1]
+
+
+def test_a_loop_without_the_expected_instruction_is_rejected():
+    junk = ["mov\tv0.16b, v1.16b"] * 20
+    text = loop_function(["nop"], junk, [])
+    for cls, acc in (("fmla_f16", 8), ("fmlal", 8)):
+        check = peak.check_loop(cls, loop_of(text), acc, acc)
+        assert not check["ok"] and sum(check["counts"].values()) == 0

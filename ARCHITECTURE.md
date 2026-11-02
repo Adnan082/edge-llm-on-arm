@@ -196,7 +196,7 @@ Exact fields are defined in `src/edge_llm/schema.py`; this is the overview.
   bytes/s with median, IQR and max, compile flags, load average before/after. Next to it,
   `..._read_loop.s` is the disassembly of the eight read loops; the record's `validity` holds
   the per-variant L1 check (L1 median, 1 GiB median, ratio, valid), the winners, and each
-  loop's vector loads and stack accesses (information: GCC may spill at 16 accumulators; only
+  loop's vector loads and stack accesses (information, not a limit; only
   a missing loop or one without vector loads is an error). Records from before ADR-021 have
   one variant (8 accumulators, k = 1) and an `acc_check` instead.
 - `results/raw/peak/<session_id>.json` — from `micro/run_peak.py`, read by `roofline.py`.

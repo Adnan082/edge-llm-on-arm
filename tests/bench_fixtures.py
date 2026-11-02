@@ -101,3 +101,24 @@ def fake_bench_record(
         "llama_bench": [row],
         "stderr_notable": [],
     }
+
+
+# --- committed disassembly from the VM ------------------------------------------------------
+
+REJECTED_PEAK = REPO / "results" / "raw" / "peak" / "2026-11-01T1904Z_rejected_disasm"
+READ_LOOPS = REPO / "results" / "raw" / "bandwidth" / "2026-11-01T1923Z_start_read_loop.s"
+
+
+def disasm_section(path: Path, name: str) -> str:
+    """The objdump text of one function from a committed listing that holds several, each after
+    a `# ===== <name>...` header line."""
+    lines, take = [], False
+    for line in path.read_text(encoding="utf8").splitlines():
+        if line.startswith("# ====="):
+            take = line.split()[2].rstrip(":") == name
+            continue
+        if take:
+            lines.append(line)
+    if not lines:
+        raise KeyError(f"{name} not in {path}")
+    return "\n".join(lines) + "\n"

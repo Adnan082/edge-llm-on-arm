@@ -77,9 +77,8 @@ static inline uint64_t read_slice_impl(const uint64_t* p, size_t n) {
 }
 
 // Separate, named, never-inlined copies: the disassembly of every loop is committed as evidence
-// of what the timed loops really are. Whether GCC keeps all accumulators in registers is not
-// assumed (at 16 it may spill): run_bandwidth.py reports vector loads and stack accesses per loop,
-// and the L1 check decides whether a variant is valid.
+// of what the timed loops really are: run_bandwidth.py reports vector loads and stack accesses
+// per loop, and the L1 check decides whether a variant is valid.
 #define READ_SLICE(ACC, K)                                                               \
     extern "C" __attribute__((noinline, noclone)) uint64_t read_slice_acc##ACC##_k##K(   \
         const uint64_t* p, size_t n) {                                                   \

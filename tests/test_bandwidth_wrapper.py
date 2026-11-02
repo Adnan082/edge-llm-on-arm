@@ -6,6 +6,7 @@ import json
 import pytest
 
 from bench.bandwidth import run_bandwidth as rb
+from edge_llm import peak
 from edge_llm.bandwidth import (
     VALID_RATIO,
     b_of_record,
@@ -14,6 +15,7 @@ from edge_llm.bandwidth import (
     validity_table,
 )
 from edge_llm.schema import BandwidthPoint, BandwidthRecord, SchemaError
+from tests.bench_fixtures import READ_LOOPS, disasm_section
 
 # read speed relative to one stream, and to 8 accumulators: more of either helps a little
 STREAM_GAIN = {1: 1.0, 2: 1.2, 4: 1.3, 8: 1.25}
@@ -381,3 +383,41 @@ def test_huge_page_runs_are_diagnostics_and_do_not_enter_b_of_t():
     bad["streams"] = 2
     with pytest.raises(SchemaError, match="huge-page"):
         BandwidthRecord.from_dict(record(all_points() + [bad]))
+
+
+# --- regression: the real listing from the VM (committed under results/raw/bandwidth/) ----------
+# The first checker took the unconditional `b 28e8` after the loop as its end and reported 12 stack
+# accesses in the 40 instructions that follow the loop. The loop itself has none.
+
+
+def real_read_loop(name):
+    return rb.check_read_loop(name, disasm_section(READ_LOOPS, name))
+
+
+def test_the_real_16_accumulator_one_stream_loop_has_no_stack_access():
+    loop = real_read_loop("read_slice_acc16_k1")
+    assert loop["ok"] and loop["stack_accesses"] == [] and loop["stores"] == []
+    assert loop["loop_instructions"] == (0x28A8 - 0x2840) // 4 + 1  # 0x2840 .. b.ne 2840
+    assert loop["vector_loads"] == 16  # 8 ldp of two 16-byte vectors: 256 bytes per step
+
+
+def test_the_code_after_the_real_loop_does_hold_stack_accesses_but_is_not_the_loop():
+    text = disasm_section(READ_LOOPS, "read_slice_acc16_k1")
+    insns = peak.parse_instructions(text)
+    after = [t for a, t in insns if 0x28E8 <= a < 0x2988]
+    assert any("[sp" in t for t in after)  # that is where the 12 stack accesses were
+    assert any(a == 0x2984 and t.startswith("b ") for a, t in insns)  # the unconditional jump
+    loop = peak.hot_loop(insns, contains=rb.VECTOR_LOAD_PATTERN)
+    assert not any("[sp" in t for t in loop)
+
+
+@pytest.mark.parametrize("k", [1, 2, 4, 8])
+def test_every_real_16_accumulator_loop_is_found_and_loads_vectors(k):
+    loop = real_read_loop(f"read_slice_acc16_k{k}")
+    assert loop["ok"] and loop["vector_loads"] > 0 and loop["stack_accesses"] == []
+
+
+def test_a_function_that_only_jumps_to_its_implementation_has_no_loop():
+    """The 24-accumulator copies of that build are a single `b` to the template function."""
+    loop = real_read_loop("read_slice_acc24_k1")
+    assert not loop["ok"] and loop["loop_instructions"] == 0

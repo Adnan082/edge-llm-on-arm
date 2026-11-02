@@ -103,11 +103,11 @@ DEFINE_SMMLA(28, FE28)
 #endif
 
 // ---- FP16 FMLA ----------------------------------------------------------------------------
-// Inline asm, one instruction per statement: GCC rewrote the vfmaq_f16 intrinsics (x and y never
-// change, so it may legally transform them) and the loop no longer held the instruction. With
-// "+w" the accumulator is both input and output, so the compiler can neither drop, merge nor
-// rewrite the instruction. y is zero, so each FMLA adds 0 and the half-precision accumulators
-// stay finite for any iteration count (the instruction does the same work whatever its operands).
+// Inline asm, one instruction per statement, so the loop holds exactly the instructions written
+// here whatever the compiler would do with intrinsics whose operands never change. With "+w" the
+// accumulator is both input and output, so the compiler can neither drop nor merge the
+// instruction. y is zero, so each FMLA adds 0 and the half-precision accumulators stay finite for
+// any iteration count (the instruction does the same work whatever its operands).
 #if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
 #define HFMA_DECL(i) float16x8_t h##i = vdupq_n_f16((float16_t)0.0f);
 #define HFMA_STEP(i) asm volatile("fmla %0.8h, %1.8h, %2.8h" : "+w"(h##i) : "w"(x), "w"(y));
@@ -159,9 +159,9 @@ DEFINE_FMA32(28, FE28)
 // ---- SVE2 FMLALB / FMLALT ------------------------------------------------------------------
 // Even-numbered chains use FMLALB, odd-numbered ones FMLALT: one instruction per chain per loop
 // iteration, half of each kind, as ggml's decode dot product issues them. Inline asm for the same
-// reason as the FP16 FMLA above (GCC rewrote the svmlalb_f32 / svmlalt_f32 intrinsics). %Z prints
-// a vector operand as an SVE register (z<n>). Each instruction adds x*y = 0.125 to its F32
-// accumulator, which stays finite for any iteration count a repetition can reach.
+// reason as the FP16 FMLA above; a plain %<n> prints an SVE-typed operand as its register
+// (z<n>). Each instruction adds x*y = 0.125 to its F32 accumulator, which stays finite for any
+// iteration count a repetition can reach.
 #if defined(__ARM_FEATURE_SVE2)
 #define LAL_SFX_0 "b"
 #define LAL_SFX_1 "t"
