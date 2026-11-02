@@ -1,0 +1,222 @@
+{
+  "schema_version": 1,
+  "kind": "ggml_f16_instructions",
+  "session_id": "2026-11-02T2141Z",
+  "captured_utc": "2026-11-02T21:47:02+00:00",
+  "repo": {
+    "commit": "586083fe1816f7f75ceb393544a5c3e5588de7c8",
+    "dirty": false
+  },
+  "builds": {
+    "baseline": {
+      "files": [
+        {
+          "path": "work/build-baseline/bin/libggml-cpu.so.0.28.0",
+          "sha256": "fd1617d2db42ee85f209b9aaefbfc43a210bd7b416b3f49b34af3570ba3e5615",
+          "counts": {
+            "fmlalb": 10,
+            "fmlalt": 10,
+            "fmla_8h": 284
+          },
+          "top_symbols": [
+            {
+              "symbol": "void (anonymous namespace)::tinyBLAS<8, __Float16x8_t, __Float16x8_t, unsigned short, unsigned short, float>::gemm<4, 4, 4>(long, long, long) [clone .constprop.0]",
+              "fmlalb": 0,
+              "fmlalt": 0,
+              "fmla_8h": 28
+            },
+            {
+              "symbol": "void (anonymous namespace)::tinyBLAS<8, __Float16x8_t, __Float16x8_t, unsigned short, unsigned short, float>::gemm<4, 4, 2>(long, long, long) [clone .constprop.0]",
+              "fmlalb": 0,
+              "fmlalt": 0,
+              "fmla_8h": 28
+            },
+            {
+              "symbol": "void (anonymous namespace)::tinyBLAS<8, __Float16x8_t, __Float16x8_t, unsigned short, unsigned short, float>::gemm<4, 4, 1>(long, long, long) [clone .constprop.0]",
+              "fmlalb": 0,
+              "fmlalt": 0,
+              "fmla_8h": 28
+            },
+            {
+              "symbol": "void (anonymous namespace)::tinyBLAS<8, __Float16x8_t, __Float16x8_t, unsigned short, unsigned short, float>::gemm_bloc<4, 6>(long, long)",
+              "fmlalb": 0,
+              "fmlalt": 0,
+              "fmla_8h": 24
+            },
+            {
+              "symbol": "ggml_vec_dot_f16",
+              "fmlalb": 10,
+              "fmlalt": 10,
+              "fmla_8h": 0
+            },
+            {
+              "symbol": "void (anonymous namespace)::tinyBLAS<8, __Float16x8_t, __Float16x8_t, unsigned short, unsigned short, float>::gemm_bloc<4, 5>(long, long)",
+              "fmlalb": 0,
+              "fmlalt": 0,
+              "fmla_8h": 20
+            },
+            {
+              "symbol": "void (anonymous namespace)::tinyBLAS<8, __Float16x8_t, __Float16x8_t, unsigned short, unsigned short, float>::gemm<4, 3, 4>(long, long, long) [clone .constprop.0]",
+              "fmlalb": 0,
+              "fmlalt": 0,
+              "fmla_8h": 20
+            },
+            {
+              "symbol": "void (anonymous namespace)::tinyBLAS<8, __Float16x8_t, __Float16x8_t, unsigned short, unsigned short, float>::gemm<4, 3, 2>(long, long, long) [clone .constprop.0]",
+              "fmlalb": 0,
+              "fmlalt": 0,
+              "fmla_8h": 20
+            },
+            {
+              "symbol": "void (anonymous namespace)::tinyBLAS<8, __Float16x8_t, __Float16x8_t, unsigned short, unsigned short, float>::gemm<4, 3, 1>(long, long, long) [clone .constprop.0]",
+              "fmlalb": 0,
+              "fmlalt": 0,
+              "fmla_8h": 20
+            },
+            {
+              "symbol": "void (anonymous namespace)::tinyBLAS<8, __Float16x8_t, __Float16x8_t, unsigned short, unsigned short, float>::gemm<4, 5, 1>(long, long, long) [clone .constprop.0]",
+              "fmlalb": 0,
+              "fmlalt": 0,
+              "fmla_8h": 16
+            }
+          ]
+        }
+      ],
+      "counts": {
+        "fmlalb": 10,
+        "fmlalt": 10,
+        "fmla_8h": 284
+      },
+      "flash_attn_tiled": {
+        "found": true,
+        "target_kind": "tiled",
+        "symbols": [
+          {
+            "symbol": "ggml_compute_forward_flash_attn_ext_tiled(ggml_compute_params const*, ggml_tensor*, int, int)",
+            "fmadd_s": 3,
+            "fmul_s": 2,
+            "fadd_s": 0,
+            "fmla_4s": 0,
+            "fmla_sve_s": 0,
+            "instructions": 1824
+          }
+        ],
+        "counts": {
+          "fmadd_s": 3,
+          "fmul_s": 2,
+          "fadd_s": 0,
+          "fmla_4s": 0,
+          "fmla_sve_s": 0,
+          "instructions": 1824
+        },
+        "dominant_fma": "scalar",
+        "disasm_file": "micro/disasm/ggml_flash_attn_tiled_baseline.s"
+      }
+    },
+    "kleidiai": {
+      "files": [
+        {
+          "path": "work/build-kleidiai/bin/libggml-cpu.so.0.28.0",
+          "sha256": "2daeda485908d9596aea805ffb91ff84c7d2f7e707c35857cc233526482d8818",
+          "counts": {
+            "fmlalb": 16,
+            "fmlalt": 16,
+            "fmla_8h": 284
+          },
+          "top_symbols": [
+            {
+              "symbol": "void (anonymous namespace)::tinyBLAS<8, __Float16x8_t, __Float16x8_t, unsigned short, unsigned short, float>::gemm<4, 4, 4>(long, long, long) [clone .constprop.0]",
+              "fmlalb": 0,
+              "fmlalt": 0,
+              "fmla_8h": 28
+            },
+            {
+              "symbol": "void (anonymous namespace)::tinyBLAS<8, __Float16x8_t, __Float16x8_t, unsigned short, unsigned short, float>::gemm<4, 4, 2>(long, long, long) [clone .constprop.0]",
+              "fmlalb": 0,
+              "fmlalt": 0,
+              "fmla_8h": 28
+            },
+            {
+              "symbol": "void (anonymous namespace)::tinyBLAS<8, __Float16x8_t, __Float16x8_t, unsigned short, unsigned short, float>::gemm<4, 4, 1>(long, long, long) [clone .constprop.0]",
+              "fmlalb": 0,
+              "fmlalt": 0,
+              "fmla_8h": 28
+            },
+            {
+              "symbol": "void (anonymous namespace)::tinyBLAS<8, __Float16x8_t, __Float16x8_t, unsigned short, unsigned short, float>::gemm_bloc<4, 6>(long, long)",
+              "fmlalb": 0,
+              "fmlalt": 0,
+              "fmla_8h": 24
+            },
+            {
+              "symbol": "ggml_vec_dot_f16",
+              "fmlalb": 10,
+              "fmlalt": 10,
+              "fmla_8h": 0
+            },
+            {
+              "symbol": "void (anonymous namespace)::tinyBLAS<8, __Float16x8_t, __Float16x8_t, unsigned short, unsigned short, float>::gemm_bloc<4, 5>(long, long)",
+              "fmlalb": 0,
+              "fmlalt": 0,
+              "fmla_8h": 20
+            },
+            {
+              "symbol": "void (anonymous namespace)::tinyBLAS<8, __Float16x8_t, __Float16x8_t, unsigned short, unsigned short, float>::gemm<4, 3, 4>(long, long, long) [clone .constprop.0]",
+              "fmlalb": 0,
+              "fmlalt": 0,
+              "fmla_8h": 20
+            },
+            {
+              "symbol": "void (anonymous namespace)::tinyBLAS<8, __Float16x8_t, __Float16x8_t, unsigned short, unsigned short, float>::gemm<4, 3, 2>(long, long, long) [clone .constprop.0]",
+              "fmlalb": 0,
+              "fmlalt": 0,
+              "fmla_8h": 20
+            },
+            {
+              "symbol": "void (anonymous namespace)::tinyBLAS<8, __Float16x8_t, __Float16x8_t, unsigned short, unsigned short, float>::gemm<4, 3, 1>(long, long, long) [clone .constprop.0]",
+              "fmlalb": 0,
+              "fmlalt": 0,
+              "fmla_8h": 20
+            },
+            {
+              "symbol": "void (anonymous namespace)::tinyBLAS<8, __Float16x8_t, __Float16x8_t, unsigned short, unsigned short, float>::gemm<4, 5, 1>(long, long, long) [clone .constprop.0]",
+              "fmlalb": 0,
+              "fmlalt": 0,
+              "fmla_8h": 16
+            }
+          ]
+        }
+      ],
+      "counts": {
+        "fmlalb": 16,
+        "fmlalt": 16,
+        "fmla_8h": 284
+      },
+      "flash_attn_tiled": {
+        "found": true,
+        "target_kind": "tiled",
+        "symbols": [
+          {
+            "symbol": "ggml_compute_forward_flash_attn_ext_tiled(ggml_compute_params const*, ggml_tensor*, int, int)",
+            "fmadd_s": 3,
+            "fmul_s": 2,
+            "fadd_s": 0,
+            "fmla_4s": 0,
+            "fmla_sve_s": 0,
+            "instructions": 1824
+          }
+        ],
+        "counts": {
+          "fmadd_s": 3,
+          "fmul_s": 2,
+          "fadd_s": 0,
+          "fmla_4s": 0,
+          "fmla_sve_s": 0,
+          "instructions": 1824
+        },
+        "dominant_fma": "scalar",
+        "disasm_file": "micro/disasm/ggml_flash_attn_tiled_kleidiai.s"
+      }
+    }
+  }
+}
