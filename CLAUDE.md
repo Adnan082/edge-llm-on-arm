@@ -275,8 +275,10 @@ never from measured throughput. Count one multiply-accumulate as 2 operations ev
   ADR-021). The record used is named in
   `v1.meta.json`. STREAM triad is also measured and reported for comparability; it is not a
   roofline input.
-- `C(t)`: peak throughput at `t` threads from `micro/peak.cpp` (best median over 8, 16 and 28
-  independent chains, from disassembly-checked loops; ADR-022), per instruction class:
+- `C(t)`: peak throughput at `t` threads from `micro/peak.cpp`: t × the per-core rate in the
+  unthrottled state (90th percentile of the t = 1 repetitions, best over 8, 16 and 28 chains,
+  from disassembly-checked loops) × operations per instruction; the sustained rate at each t
+  is reported as a second, lower ceiling (ADR-022, ADR-023). Per instruction class:
   `C_sdot`, `C_smmla`, and two for F16, because ggml's F16 path uses different instructions
   in each phase (checked in the source; ADR-015): `C_hfma` for FP16 `FMLA` (prefill:
   llamafile's tinyBLAS) and `C_fmlal` for the widening FP16→FP32 `FMLALB`/`FMLALT` (decode:
@@ -341,7 +343,9 @@ thread synchronisation (grows with threads, matters most for small models); non-
 load-time format conversion (in the `kleidiai` build Q6_K tensors become 8-bit, so Q4_0 and
 Q4_K_M files read more bytes per token than the file holds; measured in §11); attention in
 plain C (on SVE builds the tiled flash-attention kernel's SIMD GEMM is compiled out,
-`simd-gemm.h:8`, so prefill attention runs a scalar triple loop, far below `C_fma32`).
+`simd-gemm.h:8`, so prefill attention runs a scalar triple loop, far below `C_fma32`);
+sustained vector throttling (under dense vector load the cores drop to half their issue rate,
+and with all 8 cores busy they almost always do; measured in §11).
 
 ## 9. Engineering conventions
 
@@ -466,8 +470,35 @@ everything else. If behind by end of Day 7: cut the microbenchmark to scalar vs 
   defined is settled before the Day-3 pilot. Known recording bug: `process_cpus` reads `[0]`
   at every t (it is read after pinning); `taskset_cpus` is the true CPU set. Source:
   `results/raw/bandwidth/2026-11-01T1727Z_{start,end}.json`.
-- Measured peaks `C(t)` (`SDOT`, `SMMLA`, FP16 `FMLA`, `FMLALB`/`FMLALT`, F32 `FMLA`; per
-  thread count; method): `TBD` (Day 3).
+- `B(t)` for v1 (ADR-017, ADR-021), session `2026-11-02T2141Z`: best read variant at
+  t = 1/2/4/8 = 37.32 / 73.13 / 135.72 / 237.23 GB/s (16 accumulators and 4 streams, except
+  8 accumulators at t = 4). One stream, `B₁(t)` = 27.96 / 54.27 / 100.41 / 181.84, so one
+  stream per core reaches about 75 %. Triad 40.97 / 90.65 / 155.39 / 256.59. Huge pages do not
+  help (k = 1: 27.61 at t = 1, 176.49 at t = 8). Every variant is valid: from L1 the same loops
+  read 114–117 GB/s per core, 3.1–4.1× their 1 GiB speed, and no loop touches the stack.
+  Drift: +0.7 % at t = 8 from start to end of the pilot session; across the day's sessions
+  `B(8)` ranged 225–237 GB/s. Source: `results/raw/bandwidth/2026-11-02T2141Z_start.json`
+  (and `2026-11-02T2017Z_{start,end}.json`).
+- Measured peaks, session `2026-11-02T2141Z` (ADR-022, ADR-023): at t = 1 every class reaches
+  **4 instructions per cycle per core** (11.95 × 10⁹ per second, i.e. about 2.99 GHz), so the
+  per-core ceilings are `SDOT` 382, `SMMLA` 765, FP16 `FMLA` 191, `FMLALB`/`FMLALT` 95.6 and
+  F32 `FMLA` 95.6 GOPS, and `C(t)` = t × these. **Surprise, sustained vector throttling:** each
+  100 ms repetition runs either at that rate or at exactly half of it. The share of fast
+  repetitions at t = 1 is 100 % for `SDOT` and `SMMLA`, 70 % for FP16 `FMLA`, and 40 % for
+  `FMLALB`/`FMLALT` and F32 `FMLA`; at t = 8 it is 0 % for every class, with a sustained mean
+  of 6.0–7.0 × 10⁹ instructions/s per core (50–59 % of the ceiling). Most likely the cores'
+  power management throttling high-power vector instructions (MPMM-style); not confirmed.
+  Source: `results/raw/peak/2026-11-02T2141Z.json`.
+- ggml's own code (static instruction counts, both builds): tinyBLAS's FP16 GEMM uses
+  `fmla .8h` and `ggml_vec_dot_f16` uses `fmlalb`/`fmlalt` (confirms ADR-015); the tiled
+  flash-attention kernel has no vector FMA, only 3 scalar `fmadd` in 1,824 instructions
+  (confirms the plain-C attention gap, ADR-020). Source:
+  `results/raw/peak/2026-11-02T2141Z_ggml_f16_instructions.json`, `micro/disasm/`.
+- Pilot, session `2026-11-02T2017Z` (26 points + 6 re-runs, 58 min): at t = 1 the repeat noise
+  (IQR/median) is under 1 %; at t = 8 it is 0.4–9.5 %, and 23 % of first attempts were flagged
+  noisy (`small_F16_kleidiai_t8_tg128d2048` stays noisy after its re-run, 8.9 %). Full-sweep
+  wall-time estimate: 13.8 h (upper bound 40.6 h). Source:
+  `results/raw/bench/2026-11-02T2017Z/_pilot_summary.md`.
 
 ## 12. README headline structure
 
@@ -537,6 +568,7 @@ everything else. If behind by end of Day 7: cut the microbenchmark to scalar vs 
 | ADR-020 | 2026-11-01 | §8 v1 finalised from the Day 3 source reading, before the pilot: compute time = weight FLOPs at the weight format's peak + attention FLOPs at a new F32 `FMLA` peak `C_fma32`; attention counted as `P(P + 64)/2` pairs (64 × 64 flash-attention tiles); the last layer's FFN for the output token only; `n_logits` = 1; decode uses the average context `d + (n_gen − 1)/2` | ggml computes attention in F32 (K and V tiles are converted to F32), so an int8 or FP16 peak is not its ceiling; the counts are what the code does (sources in §8). On SVE builds that attention runs a scalar loop (`simd-gemm.h:8`), which v1 treats as a named gap rather than a ceiling | One ceiling for all prefill FLOPs (would bound F32 attention by the int8 peak); counting the triangle only (undercounts attention by 50 % at P = 128) |
 | ADR-021 | 2026-11-01 | Bandwidth kernel validity: `B(t)` = the best median over 8 and 16 accumulators × 1, 2, 4 and 8 streams, counting only variants that read at least 1.5× faster from a 32 KiB (L1) buffer than from 1 GiB; the accumulator-doubling check is dropped | The doubling check gave results that are hard to read (24 vs 16 accumulators: 0.95 to 1.03 across k). *Corrected 2026-11-02:* the "spills" reported at the time were a checker bug (it inspected the code after the loop; the real 16-accumulator loop is clean). A read test can only under-measure memory speed, because the checksum proves every byte was read, so the fastest valid variant is the best estimate; the L1 headroom shows the loop itself is not the limit | Hand-written assembly read loops (more code to explain); keeping the doubling check (fails for compiler reasons) |
 | ADR-022 | 2026-11-02 | `C(t)` = the best median over 8, 16 and 28 independent chains, measured at every t for each instruction class; a loop counts only if the disassembly check passes (exact instruction count, no memory access) | On the VM, 28 chains beat 16 at t = 1 for at least one class, so a fixed 16 under-measures the peak. A peak test can only under-measure, because the check proves exactly which instructions ran, so the best valid variant is the best estimate (the same rule as `B(t)`, ADR-021) | A fixed chain count (under-measures); failing the run when more chains help (loses the data) |
+| ADR-023 | 2026-11-02 | `C(t)` = t × the per-core rate in the unthrottled state (90th percentile of the t = 1 repetitions, best over 8/16/28 chains) × operations per instruction; the sustained mean at each t is reported as a second, lower ceiling, and throttling becomes a named gap; refines ADR-022 | The peak runs are two-state: each 100 ms repetition runs at 4 instructions per cycle or at exactly 2, and with all 8 cores busy almost always at 2. A median of two-state samples flips between the states, so it is not a stable ceiling. The per-core issue rate is the hardware limit; the throttling is the chip's power management, which the report measures and names | The median (unstable); the sustained mean as the ceiling (it depends on how much a workload triggers the throttle, so a real kernel could exceed it and push ratios above 1) |
 
 ## 16. Progress Log
 
@@ -585,3 +617,14 @@ everything else. If behind by end of Day 7: cut the microbenchmark to scalar vs 
   `results/raw/bandwidth/2026-11-01T1923Z_start_read_loop.s`); commit `883f252`'s message
   repeats the false claim. Fix: a loop is a conditional backward branch, with regression tests
   on those files. The inline-asm versions are kept (correct, and immune to the compiler).
+- 2026-11-02 — **Day 3 gate passed** (pilot session `2026-11-02T2017Z`, records `79f409a`;
+  `B(t)` and `C(t)` session `2026-11-02T2141Z`, records `61b7560`). The pilot's raw JSON
+  validated against the schema, repeat noise is measured, `C(t)` is recorded and the full
+  sweep is estimated at 13.8 h. ADR-021 to ADR-023 recorded. In plain English: Axion reads
+  memory at 37 GB/s on one core and 237 GB/s on eight, but only when each core runs about four
+  read streams; one stream gets 75 % of that. Each core can issue four vector multiply-adds per
+  cycle, yet under sustained heavy vector maths the chip halves that rate, and with all eight
+  cores busy it almost always does. Early pilot signals, to be confirmed by the sweep: F16 runs
+  at the same speed in both builds, as a control should; with Q4_0 on one core KleidiAI writes
+  words 17 % faster but reads prompts 2.6 % slower; and the small model's word-writing uses
+  only 30–40 % of the memory bandwidth, so it is not bandwidth-bound. Next: Day 4.
