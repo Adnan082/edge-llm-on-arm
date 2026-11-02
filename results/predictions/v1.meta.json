@@ -1,0 +1,141 @@
+{
+  "version": "v1",
+  "rows": 144,
+  "repo_head_when_generated": {
+    "commit": "23df4b8fc24f1d01cb55556a35ff7cfd08d2d084",
+    "dirty": true
+  },
+  "note": "the predictions are committed together with the code that made them, so the commit that adds this file is the one that follows the head above",
+  "inputs_sha256": {
+    "configs/sweep.yaml": "1062e84235ce022d4ddc4f918ab4525289892e5594d8d4b9361b924cdaa7c873",
+    "results/raw/bandwidth/2026-11-02T2141Z_start.json": "3fbb74c70d42f5e282e619ee01a33bf8e7a2ed2fa8621a2824b26c71f8e7639d",
+    "results/raw/peak/2026-11-02T2141Z.json": "180e0efcd6d44e7dda689608e38bf27f8905c77ce7f83dfcdbec96319536a7c7",
+    "results/models/small_F16.json": "89458f95a58702dbd01d13f7d4904552aea69370c04b6eccf0f56d88dd6a4e2b",
+    "results/models/small_Q8_0.json": "f78e147ce9d20bbc64769947dabad2af20614e12150aff1179d817a02fa5b1b5",
+    "results/models/small_Q4_0.json": "14f0fea81ff1a92a3c9b173e0c16ace49b9d07f3216dc12861e32028e6248ddf",
+    "results/models/small_Q4_K_M.json": "d357183aee61b73111b4c2bc9ea5825c06ccf69a1c36ed93ece292951f213b3d"
+  },
+  "inputs_sha256_note": "SHA256 of the file as git stores it (line endings LF)",
+  "bandwidth_record": "results/raw/bandwidth/2026-11-02T2141Z_start.json",
+  "peak_record": "results/raw/peak/2026-11-02T2141Z.json",
+  "bench_settings": {
+    "n_batch": 2048,
+    "n_ubatch": 512,
+    "type_k": "f16",
+    "type_v": "f16",
+    "flash_attn": 1,
+    "load_mode": "auto",
+    "repack": 1,
+    "poll": 50,
+    "prio": 0,
+    "delay": 0
+  },
+  "adrs": [
+    "ADR-004",
+    "ADR-015",
+    "ADR-016",
+    "ADR-017",
+    "ADR-018",
+    "ADR-019",
+    "ADR-020",
+    "ADR-021",
+    "ADR-022",
+    "ADR-023",
+    "ADR-024"
+  ],
+  "formulas": {
+    "decode": "tps = 1 / max((W_blk + W_out + KV(c)) / B(t), 2(N_blk + N_out) / C_dec(t) + 4 L H d c / C_fma32(t)); c = depth + (n_gen - 1) / 2",
+    "prefill": "tps = P / max((ceil(P / n_ubatch) W_blk + W_out) / B(t), F_w / C_pre(t) + F_a / C_fma32(t)); F_w = 2 N_blk P - 2 N_ffn_last (P - 1) + 2 N_out; F_a = 2 L H d P (P + 64)",
+    "classes": "C_dec = sdot (quantised) or fmlal (F16); C_pre = max(sdot, smmla) (quantised) or fmla_f16 (F16)"
+  },
+  "hardware": {
+    "bandwidth": {
+      "1": {
+        "B": 37315897864.1,
+        "accumulators": 16,
+        "streams": 4,
+        "B1": 27956991508.699997,
+        "B1_accumulators": 16
+      },
+      "2": {
+        "B": 73128212150.75,
+        "accumulators": 16,
+        "streams": 4,
+        "B1": 54272751227.65,
+        "B1_accumulators": 16
+      },
+      "4": {
+        "B": 135715878628.5,
+        "accumulators": 8,
+        "streams": 4,
+        "B1": 100408312090.2,
+        "B1_accumulators": 16
+      },
+      "8": {
+        "B": 237229770636.4,
+        "accumulators": 16,
+        "streams": 4,
+        "B1": 181843847856.2,
+        "B1_accumulators": 8
+      }
+    },
+    "peak": {
+      "sdot": {
+        "ops_per_instruction": 32.0,
+        "p90_instr_per_s_per_core": 11949523832.35,
+        "chains_at_p90": 16,
+        "chains_at_sustained_mean_by_t": {
+          "1": 16,
+          "2": 16,
+          "4": 16,
+          "8": 16
+        }
+      },
+      "smmla": {
+        "ops_per_instruction": 64.0,
+        "p90_instr_per_s_per_core": 11949350926.61,
+        "chains_at_p90": 16,
+        "chains_at_sustained_mean_by_t": {
+          "1": 16,
+          "2": 16,
+          "4": 16,
+          "8": 16
+        }
+      },
+      "fmla_f16": {
+        "ops_per_instruction": 16.0,
+        "p90_instr_per_s_per_core": 11949812858.710001,
+        "chains_at_p90": 28,
+        "chains_at_sustained_mean_by_t": {
+          "1": 28,
+          "2": 16,
+          "4": 16,
+          "8": 16
+        }
+      },
+      "fmlal": {
+        "ops_per_instruction": 8.0,
+        "p90_instr_per_s_per_core": 11949070399.249998,
+        "chains_at_p90": 28,
+        "chains_at_sustained_mean_by_t": {
+          "1": 28,
+          "2": 28,
+          "4": 28,
+          "8": 16
+        }
+      },
+      "fma32": {
+        "ops_per_instruction": 8.0,
+        "p90_instr_per_s_per_core": 11949235385.39,
+        "chains_at_p90": 28,
+        "chains_at_sustained_mean_by_t": {
+          "1": 16,
+          "2": 28,
+          "4": 16,
+          "8": 16
+        }
+      }
+    },
+    "sve_vector_bits": 128
+  }
+}

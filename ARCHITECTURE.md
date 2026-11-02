@@ -4,8 +4,8 @@
 > one step to the next, and the rules that keep the results honest. The spec (`CLAUDE.md`)
 > says *what* we measure and *why*; this file says *how* the code is arranged to do it.
 >
-> **Status: Day 3.** Set-up (`env`, `build`, `models`, `check-builds`), `make bandwidth`,
-> `make peak`, `make bench SET=pilot|full`, `make test` and `make lint` exist; `predict`,
+> **Status: Day 4.** Set-up (`env`, `build`, `models`, `check-builds`), `make bandwidth`,
+> `make peak`, `make predict`, `make bench SET=pilot|full`, `make test` and `make lint` exist;
 > `analyse`, `figures` and `micro` are still placeholders. When code changes the design,
 > update this file in the same commit.
 
@@ -124,8 +124,14 @@ the compilers and Python, and clones llama.cpp at the pinned commit into `work/`
 ### Step 2 — Predict (anywhere)
 
 - `make predict` — `roofline.py` combines `B(t)`, `C(t)` and the tensor tables into a
-  predicted tokens/s for every point in `sweep.yaml`, using the formulas in spec §8.
+  predicted tokens/s for every point of the full sweep (144: the small model only, ADR-024),
+  using the formulas in spec §8. `B(t)` is the best valid read variant of one named bandwidth
+  record; `C(t)` is t × the 90th percentile of the one-thread repetitions × operations per
+  instruction (ADR-023) from one named peak record. Both records are constants at the top of
+  `roofline.py`. A second, informational prediction uses the sustained (mean) ceilings.
 - The result, `results/predictions/v1.csv`, is committed **before** step 3 starts.
+  `v1.meta.json` names the input files with their SHA256s, the repo commit, the ADRs and the
+  `B` and `C` values that won.
 
 ### Step 3 — Measure the models (VM)
 
@@ -135,7 +141,9 @@ the compilers and Python, and clones llama.cpp at the pinned commit into `work/`
 - Each call writes one raw JSON file: `results/raw/bench/<session_id>/<config_id>.json`. The
   command line spells out every fixed setting from `sweep.yaml: bench_settings` (ADR-019) and
   the pinning (`taskset -c 0-(t-1)`, `-t t`, `--cpu-mask`, `--cpu-strict 1`; ADR-014). Points
-  already done in the session are skipped, so a crashed run resumes. If IQR/median of a
+  already done in the session are skipped, so a crashed run resumes: records are written to a
+  temporary file and renamed into place, so a crash or VM restart never leaves a half file.
+  Resume with the same `make bench SET=full`, and without `make env` (that starts a new session). If IQR/median of a
   point's repetitions is above 5 %, the point is run once more after its pair and saved as
   `<config_id>__2.json`; both files stay.
 - `make bench SET=pilot` runs the small Day-3 pilot listed in the same `sweep.yaml`, then
@@ -175,8 +183,9 @@ Exact fields are defined in `src/edge_llm/schema.py`; this is the overview.
 **Written by hand**
 
 - `configs/sweep.yaml` — read by `run_sweep.py` and `roofline.py`. Model aliases (`small`,
-  `large` → file, source, SHA256), formats, builds, thread counts, tests, repetitions,
-  slow points, pruned points with reasons, and the pilot subset.
+  `large` → file, source, SHA256), which of them the full sweep runs (`full.models`: `small`
+  only, ADR-024), formats, builds, thread counts, tests, repetitions, slow points, pruned
+  points with reasons, and the pilot subset.
 - `configs/machine.yaml` — machine type, zone, price, date, VM hours.
 
 **Inputs to the prediction**
@@ -280,7 +289,7 @@ On a fresh VM, run `bash infra/setup_vm.sh` once before any target.
 | `make bandwidth PHASE=start` (or `end`) | `bench/bandwidth/` | VM | `results/raw/bandwidth/` |
 | `make check-builds` | `bench/check_builds.py` | VM | `results/raw/build/` |
 | `make peak` | `micro/run_peak.py` (`micro/peak.cpp`) | VM | `results/raw/peak/`, `micro/disasm/` |
-| `make predict` | `roofline.py` | anywhere | `results/predictions/` |
+| `make predict` | `python -m edge_llm.roofline` | anywhere | `results/predictions/` |
 | `make bench SET=pilot` (or `full`) | `bench/run_sweep.py` → llama-bench | VM | `results/raw/bench/` |
 | `make analyse` | `analyse.py` | anywhere | `results/processed/` |
 | `make figures` | `plots.py` | anywhere | `figures/` |
@@ -293,12 +302,14 @@ On a fresh VM, run `bash infra/setup_vm.sh` once before any target.
   written by the test (bytes checked against the ggml block sizes for Q4_0, Q8_0, Q4_K, Q6_K,
   F16, F32; roles; tied embeddings), schema validation of the Day 2 and Day 3 records
   (bandwidth with streams, peak, bench), `config_id` / `pair_id` and the sweep enumeration
-  (288 points; 26 in the pilot), the build-order alternation, resume / re-run / never-overwrite
+  (144 points; 26 in the pilot), the build-order alternation, resume / re-run / never-overwrite
   of the sweep, median/IQR and the 5 % noisy rule on synthetic data, the operations per
   instruction, `B(t)` = best over k, the disassembly parser on synthetic `objdump` text, the
   pilot's wall-time method on synthetic records, the dirty check, parsing of llama.cpp's log
-  lines and CMake caches. Day 4 adds the roofline known-answer tests (spec §8) and the rule-3
-  check.
+  lines and CMake caches. Day 4 adds the roofline known-answer tests (spec §8: every formula on
+  hand-worked fixtures, the `B(t)` and `C(t)` rules on synthetic records, the real inputs against
+  the numbers pinned in §11, the committed `v1.csv` against a fresh run) and the rule-3 check
+  (`roofline.py` never opens `results/raw/bench/`, and its source never names that folder).
 - **On the VM, `pytest -m hardware`:** the bandwidth kernels (including the k-stream reads and
   the huge-page run) reproduce their known checksums on the right cores and report the
   process CPU set correctly; each peak loop's real disassembly contains its instruction;

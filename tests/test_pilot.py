@@ -132,7 +132,8 @@ def test_long_prompts_get_the_correction_the_extra_point_showed():
 
 def test_the_estimate_covers_the_whole_sweep_and_grows_with_noise():
     est = pilot.estimate_full_sweep(pilot_records(), CFG, SIZES)
-    assert est["full_sweep_points"] == 288 and est["pilot_calls"] == 26
+    assert est["full_sweep_points"] == 144 and est["pilot_calls"] == 26
+    assert len(est["call_seconds"]) == 144 and min(est["call_seconds"].values()) > 0
     assert 0 < est["estimate_hours"] <= est["upper_bound_hours"]
     assert sum(est["hours_by_group"].values()) == pytest.approx(est["estimate_hours"])
     assert est["noisy_fraction_of_pilot"] == 0
@@ -180,7 +181,7 @@ def test_write_pilot_summary_next_to_the_records(tmp_path, monkeypatch):
         run_sweep.write_record(run_sweep.record_path("S", rec["config_id"], 1), rec)
     run_sweep.write_pilot_summary(CFG, "S")
     summary = json.loads((tmp_path / "S" / "_pilot_summary.json").read_text())
-    assert summary["estimate"]["full_sweep_points"] == 288 and len(summary["noise"]) == 26
+    assert summary["estimate"]["full_sweep_points"] == 144 and len(summary["noise"]) == 26
     assert "Repeat noise" in (tmp_path / "S" / "_pilot_summary.md").read_text()
     # the summary files are not mistaken for points
     assert len(run_sweep.load_session_records("S")) == 26

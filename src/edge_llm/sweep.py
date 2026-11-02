@@ -135,7 +135,7 @@ def pairs(cfg: dict, set_name: str) -> list[Pair]:
     if set_name == "full":
         specs = [
             (m, q, t, test)
-            for m in cfg["models"]
+            for m in cfg["full"]["models"]
             for q in cfg["quants"]
             for t in cfg["threads"]
             for test in tests_for(cfg, t)

@@ -61,11 +61,12 @@ def test_pair_points_follow_the_alternating_order():
     assert {x.pair_id for x in ps[0].points()} == {ps[0].pair_id}
 
 
-def test_the_full_sweep_has_288_points():
+def test_the_full_sweep_has_144_points_all_of_the_small_model():
     cfg = real_cfg()
     ps = sweep.pairs(cfg, "full")
-    # 2 models x 4 formats x 4 thread counts x 4 tests, plus decode at depth for t in {1, 8}
-    assert len(ps) * 2 == 2 * 4 * 4 * 4 * 2 + 2 * 4 * 2 * 2 == 288
+    # 1 model (ADR-024) x 4 formats x 4 thread counts x 4 tests, plus decode at depth for t in {1, 8}
+    assert len(ps) * 2 == 4 * 4 * 4 * 2 + 4 * 2 * 2 == 144
+    assert {p.model for p in ps} == {"small"}
     ids = [p.config_id for pair in ps for p in pair.points()]
     assert len(set(ids)) == len(ids)
     depth = [p for p in ps if "d2048" in p.test]
@@ -80,15 +81,19 @@ def test_the_pilot_is_the_small_model_plus_the_slowest_point():
     assert {p.threads for p in ps[:-1]} == {1, 8}
     last = ps[-1]
     assert (last.model, last.quant, last.threads, last.test) == ("large", "F16", 1, "pp2048")
-    # every pilot point is a point of the full sweep, so the timings carry over
+    # every small-model pilot point is a point of the full sweep, so the timings carry over; the
+    # large-model point stays in the pilot as evidence but is not in the full sweep (ADR-024)
     full = {p.pair_id for p in sweep.pairs(cfg, "full")}
-    assert {p.pair_id for p in ps} <= full
+    assert {p.pair_id for p in ps[:-1]} <= full
+    assert last.pair_id not in full
 
 
 def test_slow_points_get_fewer_repetitions():
     cfg = real_cfg()
     ps = {p.pair_id: p for p in sweep.pairs(cfg, "full")}
-    assert sweep.repetitions(cfg, ps["large_F16_t1_pp2048"]) == 3
+    assert sweep.repetitions(cfg, ps["small_F16_t1_pp512"]) == 5  # none listed on Day 4
+    cfg["slow_points"] = [{"point": "small_F16_t1_pp2048", "reason": "test"}]
+    assert sweep.repetitions(cfg, ps["small_F16_t1_pp2048"]) == 3
     assert sweep.repetitions(cfg, ps["small_F16_t1_pp512"]) == 5
 
 
@@ -174,6 +179,18 @@ def test_write_record_never_overwrites(out_root):
     with pytest.raises(FileExistsError):
         run_sweep.write_record(path, {"a": 2})
     assert json.loads(path.read_text()) == {"a": 1}
+
+
+def test_a_write_cut_off_midway_leaves_no_record_and_the_resume_redoes_the_point(out_root):
+    cid = "small_F16_baseline_t1_pp512"
+    path = run_sweep.record_path("S", cid, 1)
+    # what a crash leaves behind: a half-written temporary file, never a half-written record
+    path.parent.mkdir(parents=True)
+    path.with_name(f".{path.name}.tmp").write_text('{"noisy": fal')
+    assert not path.exists() and run_sweep.status("S", cid) == "todo"
+    run_sweep.write_record(path, {"noisy": False})
+    assert json.loads(path.read_text()) == {"noisy": False}
+    assert sorted(p.name for p in path.parent.iterdir()) == [path.name]  # the temporary is gone
 
 
 def fake_run_call(script, calls):

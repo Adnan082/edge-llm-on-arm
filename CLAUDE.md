@@ -136,8 +136,9 @@ plus the evidence. Null results are results.
   ggml's kernels (§11, ADR-013). **F16 is the negative control**: it should show ~1.0×, and a
   speed-up there means something other than KleidiAI differs between the builds. Q4_K_M is a
   **partial** case: only its Q6_K tensors move to KleidiAI.
-- **Models:** Qwen3 0.6B and Qwen3 1.7B from Hugging Face (`Qwen/Qwen3-0.6B`,
-  `Qwen/Qwen3-1.7B`; ADR-009). Start from one F16 GGUF per size (converted with the pinned
+- **Models:** the full sweep uses Qwen3 0.6B only (`Qwen/Qwen3-0.6B`; ADR-024). Qwen3 1.7B
+  (`Qwen/Qwen3-1.7B`, ADR-009) was prepared on Day 2 and timed once in the pilot; its files,
+  tables and pilot records stay as recorded evidence. Start from one F16 GGUF per size (converted with the pinned
   commit's tools, or an official F16 GGUF) and produce every other format locally with
   `llama-quantize` from the same commit, using its default tensor-type mix (ADR-010). Pin
   the Hugging Face revision, file names, SHA256 hashes and each file's per-tensor type mix.
@@ -386,7 +387,7 @@ and with all 8 cores busy they almost always do; measured in §11).
 | 10 | README polish, fresh-clone reproduction check, CV bullet | `git clone` → `make test` passes; README headline correct |
 
 If the full sweep is not complete by end of Day 5: drop the larger model size, keep
-everything else. If behind by end of Day 7: cut the microbenchmark to scalar vs NEON `SDOT`
+everything else (ADR-024 has since dropped it from the sweep altogether). If behind by end of Day 7: cut the microbenchmark to scalar vs NEON `SDOT`
 (still in L1 and DRAM) and use Day 8 to catch up.
 
 ## 11. Pinned facts (fill in as discovered; never guess)
@@ -569,6 +570,7 @@ everything else. If behind by end of Day 7: cut the microbenchmark to scalar vs 
 | ADR-021 | 2026-11-01 | Bandwidth kernel validity: `B(t)` = the best median over 8 and 16 accumulators × 1, 2, 4 and 8 streams, counting only variants that read at least 1.5× faster from a 32 KiB (L1) buffer than from 1 GiB; the accumulator-doubling check is dropped | The doubling check gave results that are hard to read (24 vs 16 accumulators: 0.95 to 1.03 across k). *Corrected 2026-11-02:* the "spills" reported at the time were a checker bug (it inspected the code after the loop; the real 16-accumulator loop is clean). A read test can only under-measure memory speed, because the checksum proves every byte was read, so the fastest valid variant is the best estimate; the L1 headroom shows the loop itself is not the limit | Hand-written assembly read loops (more code to explain); keeping the doubling check (fails for compiler reasons) |
 | ADR-022 | 2026-11-02 | `C(t)` = the best median over 8, 16 and 28 independent chains, measured at every t for each instruction class; a loop counts only if the disassembly check passes (exact instruction count, no memory access) | On the VM, 28 chains beat 16 at t = 1 for at least one class, so a fixed 16 under-measures the peak. A peak test can only under-measure, because the check proves exactly which instructions ran, so the best valid variant is the best estimate (the same rule as `B(t)`, ADR-021) | A fixed chain count (under-measures); failing the run when more chains help (loses the data) |
 | ADR-023 | 2026-11-02 | `C(t)` = t × the per-core rate in the unthrottled state (90th percentile of the t = 1 repetitions, best over 8/16/28 chains) × operations per instruction; the sustained mean at each t is reported as a second, lower ceiling, and throttling becomes a named gap; refines ADR-022 | The peak runs are two-state: each 100 ms repetition runs at 4 instructions per cycle or at exactly 2, and with all 8 cores busy almost always at 2. A median of two-state samples flips between the states, so it is not a stable ceiling. The per-core issue rate is the hardware limit; the throttling is the chip's power management, which the report measures and names | The median (unstable); the sustained mean as the ceiling (it depends on how much a workload triggers the throttle, so a real kernel could exceed it and push ratios above 1) |
+| ADR-024 | 2026-11-02 | The full sweep runs Qwen3 0.6B only (144 points); Qwen3 1.7B leaves the sweep (narrows ADR-009). Its files, tensor tables and pilot records stay as recorded evidence | Owner's call, to finish by Fri 2026-11-06: the sweep drops from about 14 h to about 3.5 h. Cost: one model size, so RQ1 cannot show how decode moves towards the bandwidth limit as the model grows (the pilot suggests the 0.6B model's decode is not bandwidth-bound) | Both sizes (about 14 h); 1.7B decode only (about 1 h more) |
 
 ## 16. Progress Log
 
@@ -628,3 +630,8 @@ everything else. If behind by end of Day 7: cut the microbenchmark to scalar vs 
   at the same speed in both builds, as a control should; with Q4_0 on one core KleidiAI writes
   words 17 % faster but reads prompts 2.6 % slower; and the small model's word-writing uses
   only 30–40 % of the memory bandwidth, so it is not bandwidth-bound. Next: Day 4.
+- 2026-11-02 — Owner's new target: finish by **Fri 2026-11-06** (application closes
+  2026-11-22). Compressed plan, scope unchanged: Mon — Day 4, full sweep overnight; Tue —
+  Days 5–6 (analysis and figures); Wed — Days 7–8 (int8 microbenchmark, buffer); Thu — Day 9
+  (report); Fri — Day 10 (README, fresh-clone check). Stretch goals only if a day frees up.
+  The full sweep then dropped to the 0.6B model only (ADR-024), about 3.5 h.

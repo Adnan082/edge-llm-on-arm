@@ -15,7 +15,8 @@ command line. Pinning (ADR-014): `taskset -c 0-(t-1)` plus `-t t --cpu-mask <fir
 Median and IQR come from llama-bench's per-repetition samples (`samples_ts`). If IQR/median is
 above 5 %, the point is run once more after its pair, saved as <config_id>__2.json and both stay
 (CLAUDE.md §7.4). Nothing is overwritten: points already done in this session are skipped, so a
-crashed run can be started again with the same command. After a pilot, the repeat noise of every
+crashed run, or one cut off by a VM restart, is resumed by running the same command again (do not
+run `make env` first: it would start a new session). After a pilot, the repeat noise of every
 point and an estimate of the full sweep's wall time are written next to the records.
 """
 
@@ -23,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -204,9 +206,20 @@ def run_call(
 
 
 def write_record(path: Path, record: dict) -> None:
+    """Write a record, never over an existing one, and all-or-nothing.
+
+    The JSON goes to a temporary file first and is renamed into place, so a crash or a VM restart
+    in the middle of a write cannot leave a half file that would break the resumed run.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "x") as f:  # "x": never overwrite
+    if path.exists():
+        raise FileExistsError(path)
+    tmp = path.with_name(f".{path.name}.tmp")  # not *.json: never read as a record
+    with open(tmp, "w") as f:
         f.write(json.dumps(record, indent=2) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
 
 
 def status(session_id: str, config_id: str) -> str:

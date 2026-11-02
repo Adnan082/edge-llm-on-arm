@@ -194,6 +194,7 @@ def estimate_full_sweep(records: Sequence[dict], cfg: dict, sizes: dict) -> dict
     # 3. every point of the full sweep
     total = total_hi = 0.0
     by_group: dict[str, float] = defaultdict(float)
+    call_seconds: dict[str, float] = {}  # per config_id, before the re-run allowance
     for pair in sweep.pairs(cfg, "full"):
         reps = sweep.repetitions(cfg, pair)
         te = sweep.parse_test(pair.test)
@@ -205,6 +206,9 @@ def estimate_full_sweep(records: Sequence[dict], cfg: dict, sizes: dict) -> dict
             work = _call_seconds(te, reps, tps, prefill)
             gib = sizes[(pair.model, pair.quant)]["file_bytes"] / GIB
             seconds = work + typical[build] * gib
+            call_seconds[
+                sweep.config_id(pair.model, pair.quant, build, pair.threads, pair.test)
+            ] = seconds
             total += seconds
             total_hi += work + worst[build] * gib
             by_group[f"{pair.model}_{pair.quant}_{te.phase}"] += seconds
@@ -225,6 +229,7 @@ def estimate_full_sweep(records: Sequence[dict], cfg: dict, sizes: dict) -> dict
         "estimate_hours": est / 3600,
         "upper_bound_hours": est_hi / 3600,
         "hours_by_group": {k: v * (1 + noisy_fraction) / 3600 for k, v in sorted(by_group.items())},
+        "call_seconds": call_seconds,
         "notes": notes,
     }
 

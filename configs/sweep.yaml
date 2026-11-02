@@ -13,6 +13,11 @@ models:
     f16_file: large_F16.gguf   # results/models/large_F16.json
     f16_sha256: cbe12cc9edb49714def6ccaa32a935b3d968e2d7bfeedd158dada0b80fd58942
 
+# ADR-024: the full sweep runs these models only. `models` above lists everything that was
+# prepared; `large` stays as recorded evidence (tensor tables, the pilot's long-prompt point).
+full:
+  models: [small]
+
 # Final (ADR-012). Files are work/models/<alias>_<quant>.gguf.
 quants: [F16, Q8_0, Q4_0, Q4_K_M]
 
@@ -49,10 +54,10 @@ bench_settings:
   delay: 0
 
 # Points run with slow_repetitions instead of repetitions. Each: {point: <pair_id>, reason}.
-# Chosen before any full-sweep result exists (CLAUDE.md §7 item 10). Day 3 pilot: the slowest
-# full-sweep point, timed to bound the sweep's wall time; revisit after reading the estimate.
-slow_points:
-  - {point: large_F16_t1_pp2048, reason: "slowest full-sweep point (large model, F16, 1 thread, 2048-token prompt)"}
+# Chosen before any full-sweep result exists (CLAUDE.md §7 item 10): every call the Day 3 pilot
+# (edge_llm/pilot.py's method) estimates at more than 10 minutes. Day 4 estimate for the 144-point
+# small-model sweep: the longest call is small_F16_baseline_t1_pp2048 at about 456 s, so none.
+slow_points: []
 pruned_points: []    # {point, reason}; only before any full-sweep results exist (§7 item 10)
 
 # Day 3 pilot (CLAUDE.md §10): small model, F16 and Q4_0, both builds, t in {1, 8}, plus the
