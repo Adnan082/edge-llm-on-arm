@@ -193,7 +193,7 @@ DEFINE_FMA32(28, FE28)
 #define LAL_SFX_27 "t"
 #define LAL_DECL(i) svfloat32_t f##i = svdup_n_f32(0.0f);
 #define LAL_STEP(i) \
-    asm volatile("fmlal" LAL_SFX_##i " %Z0.s, %Z1.h, %Z2.h" : "+w"(f##i) : "w"(x), "w"(y));
+    asm volatile("fmlal" LAL_SFX_##i " %0.s, %1.h, %2.h" : "+w"(f##i) : "w"(x), "w"(y));
 #define LAL_SUM(i) tot = svadd_f32_x(pg32, tot, f##i);
 #define DEFINE_LAL(A, FE)                                                                   \
     extern "C" __attribute__((noinline, noclone)) uint64_t peak_fmlal_a##A(uint64_t iters) { \
