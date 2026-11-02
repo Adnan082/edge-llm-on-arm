@@ -1,0 +1,371 @@
+{
+  "session_id": "2026-11-02T2017Z",
+  "noise": [
+    {
+      "config_id": "large_F16_baseline_t1_pp2048",
+      "attempt": 1,
+      "repetitions": 3,
+      "median_tps": 8.54226,
+      "iqr_tps": 0.022809999999999775,
+      "iqr_over_median": 0.0026702535394614274,
+      "noisy": false,
+      "wall_seconds": 975.5013209609997
+    },
+    {
+      "config_id": "large_F16_kleidiai_t1_pp2048",
+      "attempt": 1,
+      "repetitions": 3,
+      "median_tps": 8.54162,
+      "iqr_tps": 0.001984999999997683,
+      "iqr_over_median": 0.00023239151355336377,
+      "noisy": false,
+      "wall_seconds": 959.4330934170002
+    },
+    {
+      "config_id": "small_F16_baseline_t1_pp512",
+      "attempt": 1,
+      "repetitions": 5,
+      "median_tps": 28.3399,
+      "iqr_tps": 0.014500000000001734,
+      "iqr_over_median": 0.0005116461243688839,
+      "noisy": false,
+      "wall_seconds": 115.4883805259999
+    },
+    {
+      "config_id": "small_F16_baseline_t1_tg128",
+      "attempt": 1,
+      "repetitions": 5,
+      "median_tps": 19.2596,
+      "iqr_tps": 0.006000000000000227,
+      "iqr_over_median": 0.00031153294980166917,
+      "noisy": false,
+      "wall_seconds": 33.446083944000065
+    },
+    {
+      "config_id": "small_F16_baseline_t1_tg128d2048",
+      "attempt": 1,
+      "repetitions": 5,
+      "median_tps": 11.1478,
+      "iqr_tps": 0.0004999999999988347,
+      "iqr_over_median": 4.4851899029300375e-05,
+      "noisy": false,
+      "wall_seconds": 215.6370445990001
+    },
+    {
+      "config_id": "small_F16_baseline_t8_pp512",
+      "attempt": 1,
+      "repetitions": 5,
+      "median_tps": 204.238,
+      "iqr_tps": 7.271000000000015,
+      "iqr_over_median": 0.03560062280280856,
+      "noisy": false,
+      "wall_seconds": 15.53913003300022
+    },
+    {
+      "config_id": "small_F16_baseline_t8_tg128",
+      "attempt": 1,
+      "repetitions": 5,
+      "median_tps": 107.008,
+      "iqr_tps": 2.793999999999997,
+      "iqr_over_median": 0.026110197368421025,
+      "noisy": false,
+      "wall_seconds": 6.358348312000089
+    },
+    {
+      "config_id": "small_F16_baseline_t8_tg128d2048",
+      "attempt": 1,
+      "repetitions": 5,
+      "median_tps": 68.8943,
+      "iqr_tps": 5.467300000000002,
+      "iqr_over_median": 0.07935779883096282,
+      "noisy": true,
+      "wall_seconds": 31.756947983999908
+    },
+    {
+      "config_id": "small_F16_baseline_t8_tg128d2048",
+      "attempt": 2,
+      "repetitions": 5,
+      "median_tps": 69.2791,
+      "iqr_tps": 0.22990000000000066,
+      "iqr_over_median": 0.003318461123195894,
+      "noisy": false,
+      "wall_seconds": 31.556973350999897
+    },
+    {
+      "config_id": "small_F16_kleidiai_t1_pp512",
+      "attempt": 1,
+      "repetitions": 5,
+      "median_tps": 28.3243,
+      "iqr_tps": 0.017800000000001148,
+      "iqr_over_median": 0.000628435654190965,
+      "noisy": false,
+      "wall_seconds": 108.71323329799998
+    },
+    {
+      "config_id": "small_F16_kleidiai_t1_tg128",
+      "attempt": 1,
+      "repetitions": 5,
+      "median_tps": 19.2605,
+      "iqr_tps": 0.006600000000002382,
+      "iqr_over_median": 0.00034267023182172745,
+      "noisy": false,
+      "wall_seconds": 33.44941222800003
+    },
+    {
+      "config_id": "small_F16_kleidiai_t1_tg128d2048",
+      "attempt": 1,
+      "repetitions": 5,
+      "median_tps": 11.1769,
+      "iqr_tps": 0.008399999999999963,
+      "iqr_over_median": 0.0007515500720235452,
+      "noisy": false,
+      "wall_seconds": 214.16223271600006
+    },
+    {
+      "config_id": "small_F16_kleidiai_t8_pp512",
+      "attempt": 1,
+      "repetitions": 5,
+      "median_tps": 202.093,
+      "iqr_tps": 7.674000000000007,
+      "iqr_over_median": 0.037972616567619896,
+      "noisy": false,
+      "wall_seconds": 15.641871842
+    },
+    {
+      "config_id": "small_F16_kleidiai_t8_tg128",
+      "attempt": 1,
+      "repetitions": 5,
+      "median_tps": 106.97,
+      "iqr_tps": 0.4650000000000034,
+      "iqr_over_median": 0.004347013181265807,
+      "noisy": false,
+      "wall_seconds": 6.321465252000053
+    },
+    {
+      "config_id": "small_F16_kleidiai_t8_tg128d2048",
+      "attempt": 1,
+      "repetitions": 5,
+      "median_tps": 66.701,
+      "iqr_tps": 4.562399999999997,
+      "iqr_over_median": 0.06840077360159513,
+      "noisy": true,
+      "wall_seconds": 31.402054958999997
+    },
+    {
+      "config_id": "small_F16_kleidiai_t8_tg128d2048",
+      "attempt": 2,
+      "repetitions": 5,
+      "median_tps": 68.9449,
+      "iqr_tps": 6.149799999999999,
+      "iqr_over_median": 0.08919876597108704,
+      "noisy": true,
+      "wall_seconds": 31.536892656999953
+    },
+    {
+      "config_id": "small_Q4_0_baseline_t1_pp512",
+      "attempt": 1,
+      "repetitions": 5,
+      "median_tps": 51.0718,
+      "iqr_tps": 0.007999999999995566,
+      "iqr_over_median": 0.00015664221742714307,
+      "noisy": false,
+      "wall_seconds": 62.54838310000014
+    },
+    {
+      "config_id": "small_Q4_0_baseline_t1_tg128",
+      "attempt": 1,
+      "repetitions": 5,
+      "median_tps": 38.6603,
+      "iqr_tps": 0.32329999999999615,
+      "iqr_over_median": 0.008362583839235499,
+      "noisy": false,
+      "wall_seconds": 17.015154273000007
+    },
+    {
+      "config_id": "small_Q4_0_baseline_t1_tg128d2048",
+      "attempt": 1,
+      "repetitions": 5,
+      "median_tps": 15.4108,
+      "iqr_tps": 0.04160000000000075,
+      "iqr_over_median": 0.002699405611649022,
+      "noisy": false,
+      "wall_seconds": 167.70384504899994
+    },
+    {
+      "config_id": "small_Q4_0_baseline_t8_pp512",
+      "attempt": 1,
+      "repetitions": 5,
+      "median_tps": 344.043,
+      "iqr_tps": 25.38100000000003,
+      "iqr_over_median": 0.07377275514979241,
+      "noisy": true,
+      "wall_seconds": 9.576057538999976
+    },
+    {
+      "config_id": "small_Q4_0_baseline_t8_pp512",
+      "attempt": 2,
+      "repetitions": 5,
+      "median_tps": 330.577,
+      "iqr_tps": 16.435000000000002,
+      "iqr_over_median": 0.04971610245116872,
+      "noisy": false,
+      "wall_seconds": 9.553878051999618
+    },
+    {
+      "config_id": "small_Q4_0_baseline_t8_tg128",
+      "attempt": 1,
+      "repetitions": 5,
+      "median_tps": 182.532,
+      "iqr_tps": 0.8079999999999927,
+      "iqr_over_median": 0.004426621085617824,
+      "noisy": false,
+      "wall_seconds": 3.8957061430000977
+    },
+    {
+      "config_id": "small_Q4_0_baseline_t8_tg128d2048",
+      "attempt": 1,
+      "repetitions": 5,
+      "median_tps": 93.5612,
+      "iqr_tps": 7.781800000000004,
+      "iqr_over_median": 0.08317336673749379,
+      "noisy": true,
+      "wall_seconds": 25.21040666900035
+    },
+    {
+      "config_id": "small_Q4_0_baseline_t8_tg128d2048",
+      "attempt": 2,
+      "repetitions": 5,
+      "median_tps": 93.6243,
+      "iqr_tps": 0.3222999999999985,
+      "iqr_over_median": 0.0034424823469975047,
+      "noisy": false,
+      "wall_seconds": 25.152985112999886
+    },
+    {
+      "config_id": "small_Q4_0_kleidiai_t1_pp512",
+      "attempt": 1,
+      "repetitions": 5,
+      "median_tps": 49.7451,
+      "iqr_tps": 0.054299999999997794,
+      "iqr_over_median": 0.0010915647973367788,
+      "noisy": false,
+      "wall_seconds": 62.639758688000256
+    },
+    {
+      "config_id": "small_Q4_0_kleidiai_t1_tg128",
+      "attempt": 1,
+      "repetitions": 5,
+      "median_tps": 45.3395,
+      "iqr_tps": 0.07939999999999969,
+      "iqr_over_median": 0.0017512323691262518,
+      "noisy": false,
+      "wall_seconds": 15.01390782999988
+    },
+    {
+      "config_id": "small_Q4_0_kleidiai_t1_tg128d2048",
+      "attempt": 1,
+      "repetitions": 5,
+      "median_tps": 16.3095,
+      "iqr_tps": 0.038800000000001944,
+      "iqr_over_median": 0.0023789815751557035,
+      "noisy": false,
+      "wall_seconds": 167.13888394200012
+    },
+    {
+      "config_id": "small_Q4_0_kleidiai_t8_pp512",
+      "attempt": 1,
+      "repetitions": 5,
+      "median_tps": 336.506,
+      "iqr_tps": 17.406000000000006,
+      "iqr_over_median": 0.051725675025111016,
+      "noisy": true,
+      "wall_seconds": 10.176716775999921
+    },
+    {
+      "config_id": "small_Q4_0_kleidiai_t8_pp512",
+      "attempt": 2,
+      "repetitions": 5,
+      "median_tps": 336.918,
+      "iqr_tps": 0.12400000000002365,
+      "iqr_over_median": 0.0003680420755199296,
+      "noisy": false,
+      "wall_seconds": 10.005594472000212
+    },
+    {
+      "config_id": "small_Q4_0_kleidiai_t8_tg128",
+      "attempt": 1,
+      "repetitions": 5,
+      "median_tps": 189.409,
+      "iqr_tps": 1.122000000000014,
+      "iqr_over_median": 0.005923688948254909,
+      "noisy": false,
+      "wall_seconds": 4.24393798500023
+    },
+    {
+      "config_id": "small_Q4_0_kleidiai_t8_tg128d2048",
+      "attempt": 1,
+      "repetitions": 5,
+      "median_tps": 91.2883,
+      "iqr_tps": 8.699300000000008,
+      "iqr_over_median": 0.09529479681404963,
+      "noisy": true,
+      "wall_seconds": 25.514990822000073
+    },
+    {
+      "config_id": "small_Q4_0_kleidiai_t8_tg128d2048",
+      "attempt": 2,
+      "repetitions": 5,
+      "median_tps": 96.0071,
+      "iqr_tps": 0.63539999999999,
+      "iqr_over_median": 0.00661826052448194,
+      "noisy": false,
+      "wall_seconds": 25.13941875699993
+    }
+  ],
+  "estimate": {
+    "method": "What the Day 3 pilot tells us: repeat noise per point, and the full sweep's wall time.\n\nInput is a list of bench records (dicts, schema BenchRecord) from the pilot session. Nothing here\ncalls hardware or reads files, so it is tested in CI; bench/run_sweep.py feeds it and writes the\nresult next to the pilot's records.\n\nWall-time method (CLAUDE.md \u00a77 item 10), stated so it can be argued with:\n\n  One llama-bench call costs   overhead + warm-up + repetitions x rep_time (+ depth fill).\n    pp<N>      warm-up is one full prompt run, so (reps + 1) x N / prefill_tps\n    tg<N>      warm-up is one token (negligible), so reps x N / decode_tps\n    tg<N>d<D>  as tg, plus the D-token context filled once before the first timed run\n  `overhead` is everything else (model load, repacking or KleidiAI conversion, context set-up);\n  it is taken from the pilot calls as wall - the terms above, divided by the model file size, and\n  scaled to a file's size. The median over the pilot calls of a build is used (a first load from a\n  cold disk is in the maximum, reported as the upper bound).\n\n  Speeds for points the pilot did not run are scaled from the pilot's, per build:\n    quantisation  a format the pilot did not run takes the speed of the slowest pilot format of\n                  that model (an upper bound on time: Q8_0 and Q4_K_M files are smaller than F16)\n    threads       t = 2 and 4 by log-log interpolation between t = 1 and t = 8\n    model size    prefill is compute-bound: tokens/s scales as N_blk of the reference model over\n                  N_blk of the model; decode is bandwidth-bound: tokens/s scales as the file's\n                  weight bytes (W_all) of the reference over the model's\n    prompt length prefill tokens/s is taken as independent of N, except at N >= 2048, where it is\n                  multiplied by the factor (<= 1) that the pilot's extra long-prompt point showed\n  Re-runs of noisy points add the pilot's noisy fraction of the total.\n",
+    "pilot_wall_seconds": 3466.4741112890006,
+    "pilot_calls": 32,
+    "overhead_seconds_per_gib": {
+      "typical_median": {
+        "baseline": 4.354543688924876,
+        "kleidiai": 2.025639801291776
+      },
+      "worst": {
+        "baseline": 197.02649327213274,
+        "kleidiai": 198.52339807269468
+      }
+    },
+    "long_prompt_correction": {
+      "baseline": 0.9645493456222499,
+      "kleidiai": 0.9650082791101634
+    },
+    "noisy_fraction_of_pilot": 0.23076923076923078,
+    "full_sweep_points": 288,
+    "estimate_seconds": 49517.02395352513,
+    "estimate_hours": 13.754728875979204,
+    "upper_bound_hours": 40.550967821140425,
+    "hours_by_group": {
+      "large_F16_decode": 0.47963874223530684,
+      "large_F16_prefill": 2.2381812421145897,
+      "large_Q4_0_decode": 0.26344512971662465,
+      "large_Q4_0_prefill": 1.445600912284931,
+      "large_Q4_K_M_decode": 0.44566580983137166,
+      "large_Q4_K_M_prefill": 2.498109813864958,
+      "large_Q8_0_decode": 0.45642358765242164,
+      "large_Q8_0_prefill": 2.5196253695070587,
+      "small_F16_decode": 0.1671358683787248,
+      "small_F16_prefill": 0.8076838176875558,
+      "small_Q4_0_decode": 0.09300919378419094,
+      "small_Q4_0_prefill": 0.4538193684558086,
+      "small_Q4_K_M_decode": 0.1546408606001866,
+      "small_Q4_K_M_prefill": 0.7826938021304792,
+      "small_Q8_0_decode": 0.15854775893496578,
+      "small_Q8_0_prefill": 0.7905075988000376
+    },
+    "notes": [
+      "baseline: long-prompt correction 0.965 (measured 8.54 tok/s at large_F16_baseline_t1_pp2048, scaling alone predicts 8.86)",
+      "kleidiai: long-prompt correction 0.965 (measured 8.54 tok/s at large_F16_kleidiai_t1_pp2048, scaling alone predicts 8.85)"
+    ]
+  }
+}
