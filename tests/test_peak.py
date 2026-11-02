@@ -1,6 +1,7 @@
 """Peak throughput: operations per instruction, C(t), the hot-loop check and the peak record."""
 
 import copy
+import json
 import re
 
 import pytest
@@ -94,17 +95,18 @@ def test_a_point_needs_enough_repeats_and_a_consistent_conversion():
         PeakPoint.from_dict(pt)
 
 
-# --- C(t) and the accumulator ladder ----------------------------------------------------------
+# --- C(t): the best median over the chain counts that passed the disassembly check ------------
 
 
 def build_points(rates=None, threads=(1, 2, 4, 8)):
-    """Points for every class; `rates[(cls, acc)]` sets the per-thread instructions/s."""
+    """Points for every class, thread count and chain count; `rates[(cls, t, acc)]` or
+    `rates[(cls, acc)]` sets the per-thread instructions/s."""
     rates = rates or {}
     pts = []
     for cls in peak.PEAK_CLASSES:
         for t in threads:
-            for acc in peak.LADDER_ACCUMULATORS if t == 1 else (peak.BASE_ACCUMULATORS,):
-                base = rates.get((cls, acc), 1.0e10)
+            for acc in peak.CHAIN_COUNTS:
+                base = rates.get((cls, t, acc), rates.get((cls, acc), 1.0e10))
                 run = fake_run(t, cls, acc, base)
                 pts.append(run_peak.to_point(run, run["results"][0]))
     return pts
@@ -114,28 +116,60 @@ def objs(points):
     return [PeakPoint.from_dict(p) for p in points]
 
 
-def test_c_of_t_uses_only_the_base_accumulator_count():
-    c = peak.c_of_t(objs(build_points()))
+def all_valid():
+    return {cls: set(peak.CHAIN_COUNTS) for cls in peak.PEAK_CLASSES}
+
+
+def test_c_of_t_is_the_best_median_over_the_chain_counts_at_every_thread_count():
+    rates = {("sdot", 1, 28): 1.2e10, ("sdot", 4, 8): 1.1e10}  # per-thread instructions/s
+    summary = peak.c_summary(objs(build_points(rates)), all_valid())
+    assert summary["sdot"]["1"]["accumulators"] == 28
+    assert summary["sdot"]["4"]["accumulators"] == 8
+    c = peak.c_of_t(summary)
     assert set(c) == set(peak.PEAK_CLASSES) and set(c["sdot"]) == {1, 2, 4, 8}
-    assert c["sdot"][1] == pytest.approx(32 * 1.0e10 * 1.0015, rel=1e-3)  # 32 ops x instr/s
+    assert c["sdot"][1] == pytest.approx(32 * 1.2e10 * 1.0015, rel=1e-3)  # 32 ops x instr/s
+    assert c["sdot"][4] == pytest.approx(32 * 4 * 1.1e10 * 1.0015, rel=1e-3)
     assert c["smmla"][8] == pytest.approx(64 * 8 * 1.0e10 * 1.0015, rel=1e-3)
 
 
-def test_the_ladder_passes_when_more_chains_do_not_help():
-    # 8 chains are latency-bound (slower), 16 and 28 equal: the usual healthy picture
-    rates = {(cls, 8): 0.6e10 for cls in peak.PEAK_CLASSES}
-    summary = peak.ladder_summary(objs(build_points(rates)))
-    assert [s["instr_class"] for s in summary] == list(peak.PEAK_CLASSES)
-    assert all(s["pass"] for s in summary)
-    assert summary[0]["median_ops_per_s_by_accumulators"].keys() == {"8", "16", "28"}
+def test_c_summary_keeps_every_median_as_information():
+    rates = {("fma32", 1, 8): 0.6e10, ("fma32", 1, 28): 1.2e10}
+    s = peak.c_summary(objs(build_points(rates)), all_valid())["fma32"]["1"]
+    assert s["by_accumulators"].keys() == {"8", "16", "28"}
+    assert s["by_accumulators"]["28"] / s["by_accumulators"]["16"] == pytest.approx(1.2, rel=1e-3)
+    assert s["median"] == s["by_accumulators"]["28"]
 
 
-def test_the_ladder_fails_when_28_chains_beat_16_by_more_than_3_percent():
-    rates = {("fmla_f16", 28): 1.2e10}
-    summary = {s["instr_class"]: s for s in peak.ladder_summary(objs(build_points(rates)))}
-    assert summary["fmla_f16"]["pass"] is False
-    assert summary["fmla_f16"]["ratio_28_over_16"] == pytest.approx(1.2, rel=1e-3)
-    assert summary["sdot"]["pass"] is True
+def test_a_tie_goes_to_the_smaller_chain_count():
+    s = peak.c_summary(objs(build_points()), all_valid())  # all counts equal
+    assert all(v["accumulators"] == 8 for by_t in s.values() for v in by_t.values())
+
+
+def test_a_chain_count_whose_loop_failed_the_check_does_not_count():
+    rates = {("fmla_f16", 28): 2.0e10}  # fastest, but its loop is not what was assumed
+    valid = all_valid() | {"fmla_f16": {8, 16}}
+    s = peak.c_summary(objs(build_points(rates)), valid)["fmla_f16"]
+    assert all(v["accumulators"] != 28 for v in s.values())
+    assert all(v["by_accumulators"].keys() == {"8", "16", "28"} for v in s.values())  # kept
+
+
+def test_a_class_without_any_valid_loop_has_no_c_of_t():
+    valid = all_valid() | {"smmla": set()}
+    s = peak.c_summary(objs(build_points()), valid)
+    assert "smmla" not in s and "sdot" in s
+
+
+def test_valid_chain_counts_reads_the_disassembly_checks():
+    disasm = {
+        "sdot": {
+            "checks": [
+                {"accumulators": 8, "ok": True},
+                {"accumulators": 16, "ok": False},
+                {"accumulators": 28, "ok": True},
+            ]
+        }
+    }
+    assert peak.valid_chain_counts(disasm) == {"sdot": {8, 28}}
 
 
 # --- disassembly: finding the hot loop and checking it -----------------------------------------
@@ -253,12 +287,30 @@ def test_check_disassembly_saves_one_file_per_class(tmp_path, monkeypatch):
 # --- the peak record ---------------------------------------------------------------------------
 
 
-def record(**over):
-    points = build_points()
-    disasm = {
-        c: {"file": f"micro/disasm/peak_{c}.s", "checks": [{"function": "f", "ok": True}]}
+def disasm_for(failed=()):
+    """A disassembly part: one passing check per chain count, except the (class, count) in failed."""
+    return {
+        c: {
+            "file": f"micro/disasm/peak_{c}.s",
+            "checks": [
+                {
+                    "function": f"peak_{c}_a{a}",
+                    "accumulators": a,
+                    "loop_instructions": a + 3,
+                    "counts": {c: a},
+                    "expected_per_iteration": a,
+                    "ok": (c, a) not in failed,
+                }
+                for a in peak.CHAIN_COUNTS
+            ],
+        }
         for c in peak.PEAK_CLASSES
     }
+
+
+def record(points=None, failed=(), **over):
+    points = points or build_points()
+    disasm = disasm_for(failed)
     rec = {
         "schema_version": 1,
         "kind": "peak",
@@ -269,8 +321,8 @@ def record(**over):
         "host": {},
         "sve_vector_bits": 128,
         "points": points,
-        "acc_check": peak.ladder_summary(objs(points)),
         "disasm": disasm,
+        "c_of_t": peak.c_summary(objs(points), peak.valid_chain_counts(disasm)),
     }
     rec.update(over)
     return rec
@@ -278,7 +330,8 @@ def record(**over):
 
 def test_a_good_peak_record_validates():
     rec = PeakRecord.from_dict(copy.deepcopy(record()))
-    assert len(rec.points) == len(peak.PEAK_CLASSES) * (3 + 3)
+    assert len(rec.points) == len(peak.PEAK_CLASSES) * 4 * len(peak.CHAIN_COUNTS)
+    assert set(rec.c_of_t) == set(peak.PEAK_CLASSES)
 
 
 def test_a_record_without_a_class_is_rejected():
@@ -288,17 +341,48 @@ def test_a_record_without_a_class_is_rejected():
         PeakRecord.from_dict(r)
 
 
-def test_a_record_with_a_failed_accumulator_check_is_rejected():
+def test_a_record_needs_every_chain_count_at_every_thread_count():
     r = record()
-    r["acc_check"][0]["pass"] = False
-    with pytest.raises(SchemaError, match="accumulator check"):
+    r["points"] = [
+        p
+        for p in r["points"]
+        if not (p["instr_class"] == "sdot" and p["threads"] == 8 and p["accumulators"] == 28)
+    ]
+    with pytest.raises(SchemaError, match="every chain count"):
         PeakRecord.from_dict(r)
 
 
-def test_a_record_with_a_failed_disassembly_check_is_rejected():
+def test_a_record_with_a_failed_disassembly_check_is_kept_and_leaves_the_loop_out_of_c():
+    """The data are saved (ADR-022); the failing loop just does not count."""
+    rates = {("fmlal", 28): 2.0e10}
+    points = build_points(rates)
+    rec = PeakRecord.from_dict(record(points, failed={("fmlal", 28)}))
+    assert all(v["accumulators"] != 28 for v in rec.c_of_t["fmlal"].values())
+    assert any(
+        v["accumulators"] == 28 for v in peak.c_summary(objs(points), all_valid())["fmlal"].values()
+    )  # it would have won had it counted
+
+
+def test_a_record_whose_c_of_t_includes_a_failed_loop_is_rejected():
+    rates = {("fmlal", 28): 2.0e10}
+    points = build_points(rates)
+    r = record(points, failed={("fmlal", 28)})
+    r["c_of_t"] = peak.c_summary(objs(points), all_valid())  # counted the failed loop
+    with pytest.raises(SchemaError, match="c_of_t"):
+        PeakRecord.from_dict(r)
+
+
+def test_a_record_whose_c_of_t_is_not_the_best_median_is_rejected():
     r = record()
-    r["disasm"]["sdot"]["checks"][0]["ok"] = False
-    with pytest.raises(SchemaError, match="disassembly check failed"):
+    r["c_of_t"]["sdot"]["1"]["median"] *= 0.5
+    with pytest.raises(SchemaError, match="c_of_t"):
+        PeakRecord.from_dict(r)
+
+
+def test_a_record_needs_one_disassembly_check_per_chain_count():
+    r = record()
+    r["disasm"]["sdot"]["checks"].pop()
+    with pytest.raises(SchemaError, match="one disassembly check per chain count"):
         PeakRecord.from_dict(r)
 
 
@@ -615,3 +699,64 @@ def test_a_loop_without_the_expected_instruction_is_rejected():
     for cls, acc in (("fmla_f16", 8), ("fmlal", 8)):
         check = peak.check_loop(cls, loop_of(text), acc, acc)
         assert not check["ok"] and sum(check["counts"].values()) == 0
+
+
+# --- the run: the record is written before any failure is reported (ADR-022) -------------------
+
+
+def fake_peak_main(tmp_path, monkeypatch, failed=(), rates=None):
+    """run_peak.main with the compile, objdump and program runs replaced; returns (exit code,
+    out dir)."""
+    rates = rates or {}
+
+    def fake_check(binary, disasm_dir=None):
+        return disasm_for(failed)
+
+    def fake_run_once(t, extra):
+        accs = [int(a) for a in extra[extra.index("--acc") + 1].split(",")]
+        run = fake_run(t, "sdot", accs[0])
+        run["results"] = []
+        for cls in peak.PEAK_CLASSES:
+            for acc in accs:
+                r = fake_run(t, cls, acc, rates.get((cls, t, acc), 1.0e10))["results"][0]
+                run["results"].append(r)
+        return run
+
+    monkeypatch.setattr(run_peak, "ensure_binary", lambda: {"sha256": "x"})
+    monkeypatch.setattr(run_peak, "check_disassembly", fake_check)
+    monkeypatch.setattr(run_peak, "run_once", fake_run_once)
+    monkeypatch.setattr(run_peak.common, "current_session_id", lambda: "S")
+    out = tmp_path / "peak"
+    monkeypatch.setattr(
+        "sys.argv", ["run_peak", "--threads", "1,2", "--skip-ggml", "--out-dir", str(out)]
+    )
+    return run_peak.main(), out
+
+
+def test_run_peak_times_every_chain_count_at_every_thread_count(tmp_path, monkeypatch):
+    code, out = fake_peak_main(tmp_path, monkeypatch, rates={("sdot", 2, 28): 1.5e10})
+    assert code == 0
+    rec = json.loads((out / "S.json").read_text())
+    assert len(rec["points"]) == len(peak.PEAK_CLASSES) * 2 * len(peak.CHAIN_COUNTS)
+    assert rec["c_of_t"]["sdot"]["2"]["accumulators"] == 28
+    PeakRecord.from_dict(rec)
+
+
+def test_run_peak_saves_the_record_then_fails_when_a_loop_failed_its_check(
+    tmp_path, monkeypatch, capsys
+):
+    code, out = fake_peak_main(
+        tmp_path, monkeypatch, failed={("fma32", 16)}, rates={("fma32", 1, 16): 2.0e10}
+    )
+    assert code == 1
+    rec = json.loads((out / "S.json").read_text())  # not lost
+    assert rec["c_of_t"]["fma32"]["1"]["accumulators"] != 16
+    assert "peak_fma32_a16" in capsys.readouterr().err
+
+
+def test_run_peak_fails_but_keeps_the_record_when_a_class_has_no_valid_loop(
+    tmp_path, monkeypatch, capsys
+):
+    code, out = fake_peak_main(tmp_path, monkeypatch, failed={("smmla", a) for a in (8, 16, 28)})
+    assert code == 1 and "smmla" not in json.loads((out / "S.json").read_text())["c_of_t"]
+    assert "no C(t)" in capsys.readouterr().err

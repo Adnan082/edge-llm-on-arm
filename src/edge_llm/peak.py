@@ -29,12 +29,11 @@ OPS_PER_INSTRUCTION: dict[str, int] = {
 # SVE instructions do more work per instruction at wider vectors; NEON ones never do.
 SVE_CLASSES = ("fmlal",)
 
-# Independent dependency chains per loop: the roofline uses BASE_ACCUMULATORS; the two others are
-# the ladder that shows the base is neither latency-bound (28 must not beat it) nor trivially so
-# (8 should be slower). 28 is the most that fit in registers next to the operands.
-BASE_ACCUMULATORS = 16
-LADDER_ACCUMULATORS = (8, 16, 28)
-ACC_TOLERANCE = 0.03  # more chains may raise the peak by at most 3 %
+# Independent dependency chains per loop, all run at every thread count (ADR-022). C(t) is the
+# best median over these, as B(t) is over the read variants: a peak test can only under-measure,
+# and on the VM more chains raise the 1-thread peak of some classes, so no count is fixed in
+# advance. 28 is the most that fit in registers next to the operands.
+CHAIN_COUNTS = (8, 16, 28)
 
 # What must be in each hot loop: (regex on "mnemonic operands", label). One iteration holds
 # exactly `instr_per_iter` of them (checked in check_loop).
@@ -58,43 +57,43 @@ def ops_per_instruction(instr_class: str, sve_vector_bits: int = 128) -> float:
     return float(base)
 
 
-def c_of_t(points: Iterable) -> dict[str, dict[int, float]]:
-    """{class: {threads: median ops/s}} from the base-accumulator points of a peak record."""
-    out: dict[str, dict[int, float]] = {}
-    for p in points:
-        if p.accumulators == BASE_ACCUMULATORS:
-            out.setdefault(p.instr_class, {})[p.threads] = p.median
-    return out
+def valid_chain_counts(disasm: dict) -> dict[str, set[int]]:
+    """{class: chain counts whose loop passed the disassembly check} from a record's `disasm`."""
+    return {
+        cls: {int(c["accumulators"]) for c in d.get("checks", []) if c.get("ok") is True}
+        for cls, d in disasm.items()
+    }
 
 
-def ladder_summary(points: Iterable) -> list[dict]:
-    """Per class, the 1-thread median at each accumulator count and whether 28 beats 16.
+def c_summary(points: Iterable, valid: dict[str, set[int]]) -> dict[str, dict[str, dict]]:
+    """{class: {str(threads): {...}}}: C(t) and which chain count gave it (ADR-022).
 
-    The check passes if the largest ladder count raises the base result by at most ACC_TOLERANCE.
+    A point counts only if its loop passed the disassembly check (`valid`). C(t) is the best
+    median over the counting chain counts; a tie goes to the smaller count. `by_accumulators`
+    keeps every median, counting or not, as information. A class with no counting point at some
+    thread count has no entry there.
     """
-    by_class: dict[str, dict[int, float]] = {}
+    medians: dict[str, dict[int, dict[int, float]]] = {}
     for p in points:
-        if p.threads == 1:
-            by_class.setdefault(p.instr_class, {})[p.accumulators] = p.median
-    out = []
+        medians.setdefault(p.instr_class, {}).setdefault(p.threads, {})[p.accumulators] = p.median
+    out: dict[str, dict[str, dict]] = {}
     for cls in PEAK_CLASSES:
-        med = by_class.get(cls)
-        if not med:
-            continue
-        top = max(LADDER_ACCUMULATORS)
-        if BASE_ACCUMULATORS not in med or top not in med:
-            raise ValueError(f"{cls}: need 1-thread results at {BASE_ACCUMULATORS} and {top}")
-        ratio = med[top] / med[BASE_ACCUMULATORS]
-        out.append(
-            {
-                "instr_class": cls,
-                "median_ops_per_s_by_accumulators": {str(k): med[k] for k in sorted(med)},
-                f"ratio_{top}_over_{BASE_ACCUMULATORS}": ratio,
-                "tolerance": ACC_TOLERANCE,
-                "pass": ratio <= 1.0 + ACC_TOLERANCE,
+        for t, by_acc in sorted(medians.get(cls, {}).items()):
+            counting = {a: m for a, m in by_acc.items() if a in valid.get(cls, set())}
+            if not counting:
+                continue
+            best = min(counting, key=lambda a: (-counting[a], a))
+            out.setdefault(cls, {})[str(t)] = {
+                "accumulators": best,
+                "median": counting[best],
+                "by_accumulators": {str(a): by_acc[a] for a in sorted(by_acc)},
             }
-        )
     return out
+
+
+def c_of_t(summary: dict[str, dict[str, dict]]) -> dict[str, dict[int, float]]:
+    """{class: {threads: C(t) in ops/s}} from `c_summary` (or a record's `c_of_t` field)."""
+    return {cls: {int(t): v["median"] for t, v in by_t.items()} for cls, by_t in summary.items()}
 
 
 # --- disassembly check ----------------------------------------------------------------------

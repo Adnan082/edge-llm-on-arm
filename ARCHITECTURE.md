@@ -200,11 +200,14 @@ Exact fields are defined in `src/edge_llm/schema.py`; this is the overview.
   a missing loop or one without vector loads is an error). Records from before ADR-021 have
   one variant (8 accumulators, k = 1) and an `acc_check` instead.
 - `results/raw/peak/<session_id>.json` — from `micro/run_peak.py`, read by `roofline.py`.
-  Per instruction class and thread count: the independent accumulators in the loop, at least
-  20 samples in instructions/s and in operations/s, median, IQR and max, the pin check; the
-  accumulator ladder at one thread (8, 16 and 28 chains: more chains must not raise the
-  peak by over 3 %); the disassembly check of every hot loop; compile flags. `C(t)` is the
-  16-chain point. Next to it, `<session_id>_ggml_f16_instructions.json` counts `fmlalb`,
+  Per instruction class and thread count: the independent chains in the loop (8, 16 and 28,
+  all run at every thread count), at least 20 samples in instructions/s and in operations/s,
+  median, IQR and max, the pin check; the disassembly check of every hot loop; compile
+  flags. `C(t)` (the record's `c_of_t`, ADR-022) is the best median over the chain counts
+  whose loop passed the disassembly check, with the winning count and every median kept as
+  information; the schema recomputes it from the points. The record is written before any
+  failure is reported: a loop that fails its check is left out of `C(t)` and makes the run
+  exit non-zero, but the data are kept. Next to it, `<session_id>_ggml_f16_instructions.json` counts `fmlalb`,
   `fmlalt` and `fmla .8h` in each build's ggml library (evidence for ADR-015) and the
   scalar/vector F32 FMA counts of the tiled attention function (ADR-020); the
   disassembly itself is committed in `micro/disasm/peak_<class>.s`.

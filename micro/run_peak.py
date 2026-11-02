@@ -2,14 +2,16 @@
 
     python -m micro.run_peak          (make peak)
 
-Order of work (stops at the first failure so no time is spent on a wrong loop):
+Order of work (ADR-022; C(t) is the best median over the chain counts, as B(t) is over the read
+variants):
   1. compile peak.cpp (flags recorded);
   2. disassemble every hot loop, save micro/disasm/peak_<class>.s, and check that each loop holds
      the expected instruction the expected number of times, and no loads or stores;
   3. time every class at every thread count in configs/sweep.yaml under `taskset -c 0-(t-1)` with
-     thread i on core i (ADR-014): 16 independent chains per loop at every t, plus 8 and 28 chains
-     at one thread to show that more chains do not raise the peak;
-  4. write results/raw/peak/<session_id>.json (validated against PeakRecord);
+     thread i on core i (ADR-014): 8, 16 and 28 independent chains per loop at every t;
+  4. write results/raw/peak/<session_id>.json (validated against PeakRecord) before anything that
+     can fail the run. C(t) counts only chain counts whose loop passed step 2; the run exits
+     non-zero if any loop failed it, but the data are already saved;
   5. in the same objdump pass over each build's ggml CPU library: count FMLALB, FMLALT and
      FP16 FMLA (.8h) (evidence for ADR-015); save the disassembly of the tiled flash-attention
      function (or what it was inlined into) to micro/disasm/ and count scalar `fmadd s` and
@@ -123,7 +125,7 @@ def check_disassembly(binary: Path, disasm_dir: Path = DISASM_DIR) -> dict:
     out: dict[str, dict] = {}
     for cls in peak.PEAK_CLASSES:
         sections, checks = [], []
-        for acc in peak.LADDER_ACCUMULATORS:
+        for acc in peak.CHAIN_COUNTS:
             name = f"peak_{cls}_a{acc}"
             text = objdump_function(binary, name)
             insns = peak.parse_instructions(text)
@@ -363,28 +365,21 @@ def main() -> int:
                 f"  {c['function']:<22} loop {c['loop_instructions']:>3} insns  {c['counts']}"
                 f"  expected {c['expected_per_iteration']}  {'ok' if c['ok'] else 'FAILED'}"
             )
-    if bad:
-        print(
-            "a hot loop is not what peak.cpp assumes: see micro/disasm/; nothing was timed",
-            file=sys.stderr,
-        )
-        return 1
-
+    # A loop that fails the check is excluded from C(t), not a reason to lose the other data: every
+    # chain count is timed at every t, the record is written, and only then does the run fail.
     loadavg_before = common.loadavg()
     points, sve_bits, failed = [], 0, False
+    accs = ",".join(str(a) for a in peak.CHAIN_COUNTS)
     for t in threads:
-        accs = (
-            ",".join(str(a) for a in peak.LADDER_ACCUMULATORS)
-            if t == 1
-            else str(peak.BASE_ACCUMULATORS)
-        )
         run = run_once(t, ["--acc", accs, "--reps", str(args.reps)])
         failed = failed or run["returncode"] != 0
         sve_bits = run["sve_vector_bits"]
         points += [to_point(run, r) for r in run["results"]]
     loadavg_after = common.loadavg()
 
-    ladder = peak.ladder_summary([PeakPoint.from_dict(p) for p in points])
+    summary = peak.c_summary(
+        [PeakPoint.from_dict(p) for p in points], peak.valid_chain_counts(disasm)
+    )
     record = {
         "schema_version": SCHEMA_VERSION,
         "kind": "peak",
@@ -395,21 +390,28 @@ def main() -> int:
         "host": {"loadavg_before": loadavg_before, "loadavg_after": loadavg_after},
         "sve_vector_bits": sve_bits,
         "points": points,
-        "acc_check": ladder,
         "disasm": disasm,
+        "c_of_t": summary,
     }
-    validated = PeakRecord.from_dict(record)  # raises on a bad count, pin check or failed check
+    validated = PeakRecord.from_dict(record)  # raises on a bad count or pin check, before writing
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     path = common.write_new_json(target, record)
     print(f"wrote {path}")
     print_table(validated, threads)
-    for a in ladder:
-        key = next(k for k in a if k.startswith("ratio_"))
+    missing = [
+        (cls, t) for cls in peak.PEAK_CLASSES for t in threads if str(t) not in summary.get(cls, {})
+    ]
+    if bad:
         print(
-            f"accumulator check {a['instr_class']:<9} {key} = {a[key]:.3f}",
-            "PASS" if a["pass"] else "FAIL",
+            "loops that failed the disassembly check (left out of C(t)): "
+            + ", ".join(c["function"] for c in bad),
+            file=sys.stderr,
         )
+        failed = True
+    if missing:
+        print(f"no valid loop, so no C(t) for (class, threads): {missing}", file=sys.stderr)
+        failed = True
 
     if not args.skip_ggml:
         ggml_path = common.next_free_path(args.out_dir / f"{session_id}_ggml_f16_instructions.json")
@@ -434,10 +436,14 @@ def main() -> int:
 
 
 def print_table(record: PeakRecord, threads: list[int]) -> None:
-    c = peak.c_of_t(record.points)
-    print(f"{'class':<10}" + "".join(f"{'t=' + str(t) + ' Gop/s':>14}" for t in threads))
+    """C(t) in Gop/s with the winning chain count: '812.3 (28)'. '-' = no valid loop."""
+    print(f"{'class':<10}" + "".join(f"{'t=' + str(t) + ' Gop/s (chains)':>20}" for t in threads))
     for cls in peak.PEAK_CLASSES:
-        print(f"{cls:<10}" + "".join(f"{c[cls][t] / 1e9:>14.1f}" for t in threads))
+        cells = []
+        for t in threads:
+            v = record.c_of_t.get(cls, {}).get(str(t))
+            cells.append(f"{v['median'] / 1e9:.1f} ({v['accumulators']})" if v else "-")
+        print(f"{cls:<10}" + "".join(f"{c:>20}" for c in cells))
 
 
 if __name__ == "__main__":

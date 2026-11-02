@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass, field, fields
 from typing import Any
 
-from edge_llm.peak import BASE_ACCUMULATORS, PEAK_CLASSES
+from edge_llm.peak import CHAIN_COUNTS, PEAK_CLASSES, c_summary, valid_chain_counts
 from edge_llm.stats import NOISY_THRESHOLD, summarise
 
 SCHEMA_VERSION = 1
@@ -492,32 +492,41 @@ class PeakRecord:
     host: dict
     sve_vector_bits: int
     points: list[PeakPoint]
-    acc_check: list[dict]  # per class: does more accumulators raise the 1-thread peak?
-    disasm: dict  # per class: file and the hot-loop checks
+    disasm: dict  # per class: file and the hot-loop checks (one per chain count)
+    # C(t) per class and thread count: the best median over the chain counts whose loop passed
+    # the disassembly check, and which count won (ADR-022); see edge_llm.peak.c_summary
+    c_of_t: dict
 
     def __post_init__(self) -> None:
         _require(self.kind == "peak", f"kind must be 'peak', got {self.kind!r}")
         _require(self.points, "no peak points")
         keys = [(p.instr_class, p.threads, p.accumulators) for p in self.points]
         _require(len(set(keys)) == len(keys), "duplicate (class, threads, accumulators) points")
-        base = [p for p in self.points if p.accumulators == BASE_ACCUMULATORS]
-        _require({p.instr_class for p in base} == set(PEAK_CLASSES), "need every peak class")
-        threads = {c: {p.threads for p in base if p.instr_class == c} for c in PEAK_CLASSES}
+        _require({p.instr_class for p in self.points} == set(PEAK_CLASSES), "need every peak class")
+        threads = {c: {p.threads for p in self.points if p.instr_class == c} for c in PEAK_CLASSES}
         _require(
             len({frozenset(t) for t in threads.values()}) == 1 and 1 in threads["sdot"],
             "every class needs the same thread counts, 1-thread included",
         )
         _require(
-            {a["instr_class"] for a in self.acc_check} == set(PEAK_CLASSES)
-            and all(a["pass"] is True for a in self.acc_check),
-            "accumulator check missing or failed: more chains still raise the 1-thread peak",
+            set(keys)
+            == {(c, t, a) for c in PEAK_CLASSES for t in threads["sdot"] for a in CHAIN_COUNTS},
+            f"every class needs every chain count {CHAIN_COUNTS} at every thread count",
         )
+        # A failed disassembly check does not make the record invalid: the data are kept and the
+        # loop is left out of C(t). Whether any loop failed is read from the checks.
         _require(set(self.disasm) == set(PEAK_CLASSES), "need a disassembly check per class")
         for cls_, d in self.disasm.items():
+            checked = sorted(int(c["accumulators"]) for c in d.get("checks", []))
             _require(
-                bool(d.get("checks")) and all(c["ok"] is True for c in d["checks"]),
-                f"{cls_}: disassembly check failed (wrong instruction, count or memory access)",
+                checked == sorted(CHAIN_COUNTS),
+                f"{cls_}: need one disassembly check per chain count {CHAIN_COUNTS}",
             )
+        expected = c_summary(self.points, valid_chain_counts(self.disasm))
+        _require(
+            self.c_of_t == expected,
+            "c_of_t is not the best median over the chain counts that passed the disassembly check",
+        )
 
     @classmethod
     def from_dict(cls, d: dict) -> PeakRecord:
