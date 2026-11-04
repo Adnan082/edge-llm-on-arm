@@ -1,0 +1,208 @@
+{
+  "kind": "perf",
+  "label": "Day 8 investigation (ADR-025 surprises 1 and 3); not part of the v1 comparison",
+  "session_id": "2026-11-04T1742Z",
+  "captured_utc": "2026-11-04T18:02:39+00:00",
+  "config_id": "small_Q8_0_baseline_t1_pp128",
+  "build": "baseline",
+  "quant": "Q8_0",
+  "threads": 1,
+  "test": "pp128",
+  "event": "cycles",
+  "frequency_hz": 999,
+  "perf_version": "perf version 7.0.14",
+  "repo": {
+    "commit": "613ff78f813a6d41be2d72f0e160ec669da6385b",
+    "dirty": false
+  },
+  "llama_cpp": {
+    "commit": "ddf48f85c933c1f438212a02eb21e7b001d2d37d",
+    "dirty": false
+  },
+  "model": {
+    "file": "work/models/small_Q8_0.gguf",
+    "sha256": "8c59444c5d0e9a9e51d5e51cb6b0fa80e6243845a14361e7c3d26ab13173dcab",
+    "file_bytes": 804753312,
+    "table_file_bytes": 804753312,
+    "table": "results/models/small_Q8_0.json"
+  },
+  "command": [
+    "/usr/bin/perf",
+    "record",
+    "-e",
+    "cycles",
+    "-F",
+    "999",
+    "-o",
+    "/home/adnancheema917/edge-llm-on-arm/work/perf/2026-11-04T1742Z/small_Q8_0_baseline_t1_pp128.data",
+    "--",
+    "taskset",
+    "-c",
+    "0-0",
+    "/home/adnancheema917/edge-llm-on-arm/work/build-baseline/bin/llama-bench",
+    "-m",
+    "/home/adnancheema917/edge-llm-on-arm/work/models/small_Q8_0.gguf",
+    "-p",
+    "128",
+    "-n",
+    "0",
+    "-d",
+    "0",
+    "-t",
+    "1",
+    "-C",
+    "0x1",
+    "--cpu-strict",
+    "1",
+    "-b",
+    "2048",
+    "-ub",
+    "512",
+    "-ctk",
+    "f16",
+    "-ctv",
+    "f16",
+    "-fa",
+    "1",
+    "-lm",
+    "auto",
+    "--repack",
+    "1",
+    "--poll",
+    "50",
+    "--prio",
+    "0",
+    "--delay",
+    "0",
+    "-r",
+    "20",
+    "-o",
+    "json"
+  ],
+  "samples": "27K",
+  "top": [
+    {
+      "percent": 50.2,
+      "dso": "libggml-cpu.so.0.28.0",
+      "kind": ".",
+      "symbol": "ggml_compute_forward_flash_attn_ext_tiled(ggml_compute_params const*, ggml_tensor*, int, int)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   -      -"
+    },
+    {
+      "percent": 42.35,
+      "dso": "libggml-cpu.so.0.28.0",
+      "kind": ".",
+      "symbol": "ggml_gemm_q8_0_4x8_q8_0                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         -      -"
+    },
+    {
+      "percent": 1.35,
+      "dso": "libggml-cpu.so.0.28.0",
+      "kind": ".",
+      "symbol": "ggml_quantize_mat_q8_0_4x8                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      -      -"
+    },
+    {
+      "percent": 1.07,
+      "dso": "libggml-cpu.so.0.28.0",
+      "kind": ".",
+      "symbol": "ggml_compute_forward_rms_norm_mul_fused                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         -      -"
+    },
+    {
+      "percent": 0.9,
+      "dso": "libggml-cpu.so.0.28.0",
+      "kind": ".",
+      "symbol": "ggml_vec_swiglu_f32                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             -      -"
+    },
+    {
+      "percent": 0.6,
+      "dso": "libggml-cpu.so.0.28.0",
+      "kind": ".",
+      "symbol": "ggml_gemv_q8_0_4x8_q8_0                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         -      -"
+    },
+    {
+      "percent": 0.46,
+      "dso": "libggml-cpu.so.0.28.0",
+      "kind": ".",
+      "symbol": "void ggml_compute_forward_rope_flt<float>(ggml_compute_params const*, ggml_tensor*, bool)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       -      -"
+    },
+    {
+      "percent": 0.44,
+      "dso": "libggml-cpu.so.0.28.0",
+      "kind": ".",
+      "symbol": "ggml_vec_soft_max_f32                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           -      -"
+    },
+    {
+      "percent": 0.36,
+      "dso": "libggml-cpu.so.0.28.0",
+      "kind": ".",
+      "symbol": "repack_q8_0_to_q8_0_4_bl(ggml_tensor*, int, void const*, unsigned long)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         -      -"
+    },
+    {
+      "percent": 0.15,
+      "dso": "libggml-cpu.so.0.28.0",
+      "kind": ".",
+      "symbol": "ggml_compute_forward_add_non_quantized                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          -      -"
+    },
+    {
+      "percent": 0.13,
+      "dso": "[unknown]",
+      "kind": "k",
+      "symbol": "0xffffaddd5852f404                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              -      -"
+    },
+    {
+      "percent": 0.1,
+      "dso": "[unknown]",
+      "kind": "k",
+      "symbol": "0xffffaddd5856ed54                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              -      -"
+    },
+    {
+      "percent": 0.1,
+      "dso": "libggml-cpu.so.0.28.0",
+      "kind": ".",
+      "symbol": "ggml_cpu_fp32_to_fp16                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           -      -"
+    },
+    {
+      "percent": 0.09,
+      "dso": "libggml-cpu.so.0.28.0",
+      "kind": ".",
+      "symbol": "ggml_cpu_fp16_to_fp32                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           -      -"
+    },
+    {
+      "percent": 0.09,
+      "dso": "[unknown]",
+      "kind": "k",
+      "symbol": "0xffffaddd58584194                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              -      -"
+    },
+    {
+      "percent": 0.08,
+      "dso": "libc.so.6",
+      "kind": ".",
+      "symbol": "0x00000000000a1c40                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              -      -"
+    },
+    {
+      "percent": 0.08,
+      "dso": "libggml-cpu.so.0.28.0",
+      "kind": ".",
+      "symbol": "__memcpy_chk@plt                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                -      -"
+    },
+    {
+      "percent": 0.08,
+      "dso": "libllama.so.0.8.0",
+      "kind": ".",
+      "symbol": "std::_Hashtable<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::pair<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > > const, int>, std::allocator<std::pair<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > > const, int> >, std::__detail::_Select1st, std::equal_to<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > > >, llama_vocab::impl::pair_hash, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits<true, false, true> >::_M_find_before_node(unsigned long, std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > > const&, unsigned long) const  -      -"
+    },
+    {
+      "percent": 0.07,
+      "dso": "libm.so.6",
+      "kind": ".",
+      "symbol": "sincosf32                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       -      -"
+    },
+    {
+      "percent": 0.06,
+      "dso": "libllama.so.0.8.0",
+      "kind": ".",
+      "symbol": "llama_vocab::impl::load(llama_model_loader&, LLM_KV const&)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     -      -"
+    }
+  ],
+  "use_for_analysis": false,
+  "caveat": "profile of the whole llama-bench process, so model loading (repack, KleidiAI conversion) is in it; 20 repetitions of pp128 to dominate it. The tokens/s inside this run is not data.",
+  "llama_bench_stdout": "[\n  {\n    \"build_commit\": \"ddf48f85c\",\n    \"build_number\": 12024,\n    \"cpu_info\": \"CPU\",\n    \"gpu_info\": \"\",\n    \"backends\": \"CPU\",\n    \"model_filename\": \"/home/adnancheema917/edge-llm-on-arm/work/models/small_Q8_0.gguf\",\n    \"model_type\": \"qwen3 0.6B Q8_0\",\n    \"model_size\": 798801920,\n    \"model_n_params\": 751632384,\n    \"n_batch\": 2048,\n    \"n_ubatch\": 512,\n    \"n_threads\": 1,\n    \"cpu_mask\": \"0x1\",\n    \"cpu_strict\": true,\n    \"poll\": 50,\n    \"type_k\": \"f16\",\n    \"type_v\": \"f16\",\n    \"n_gpu_layers\": -1,\n    \"n_cpu_moe\": 0,\n    \"split_mode\": \"layer\",\n    \"main_gpu\": 0,\n    \"no_kv_offload\": false,\n    \"flash_attn\": 1,\n    \"devices\": \"auto\",\n    \"tensor_split\": \"0.00\",\n    \"tensor_buft_overrides\": \"none\",\n    \"load_mode\": \"auto\",\n    \"lazy_mode\": \"auto\",\n    \"embeddings\": false,\n    \"no_op_offload\": 0,\n    \"no_host\": false,\n    \"repack\": true,\n    \"fit_target\": 0,\n    \"fit_min_ctx\": 0,\n    \"n_prompt\": 128,\n    \"n_gen\": 0,\n    \"n_depth\": 0,\n    \"test_time\": \"2026-11-04T18:02:11Z\",\n    \"avg_ns\": 1303355375,\n    \"stddev_ns\": 592191,\n    \"avg_ts\": 98.208077,\n    \"stddev_ts\": 0.044478,\n    \"samples_ns\": [ 1303344001, 1303517869, 1304246491, 1303731673, 1303172489, 1304366770, 1303954947, 1304111181, 1303043483, 1303063303, 1303221424, 1303872097, 1304006527, 1303257120, 1302689711, 1302534854, 1302898167, 1302407485, 1302793435, 1302874489 ],\n    \"samples_ts\": [ 98.2089, 98.1958, 98.141, 98.1797, 98.2218, 98.1319, 98.1629, 98.1511, 98.2316, 98.2301, 98.2182, 98.1691, 98.159, 98.2155, 98.2582, 98.2699, 98.2425, 98.2795, 98.2504, 98.2443 ]\n  }\n]\n"
+}

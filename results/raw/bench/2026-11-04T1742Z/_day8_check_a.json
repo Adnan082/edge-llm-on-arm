@@ -1,0 +1,21 @@
+{
+  "kind": "day8_check_a",
+  "label": "Day 8 investigation (ADR-025 surprise 2); not part of the v1 comparison",
+  "session_id": "2026-11-04T1742Z",
+  "captured_utc": "2026-11-04T17:58:49+00:00",
+  "prediction": "If the Q6_K output layer explains Q4_K_M's KleidiAI decode gain, the KleidiAI decode speed-up (tg128, kleidiai / baseline median) is clearly smaller for Q4_0outq8 and Q4_0outq4 than for Q4_0 (variant speedup_hi < Q4_0 speedup_lo), at the thread count considered.",
+  "planned_config_ids": [
+    "small_Q4_0_baseline_t1_tg128",
+    "small_Q4_0_kleidiai_t1_tg128",
+    "small_Q4_0outq8_kleidiai_t1_tg128",
+    "small_Q4_0outq8_baseline_t1_tg128",
+    "small_Q4_0outq4_baseline_t1_tg128",
+    "small_Q4_0outq4_kleidiai_t1_tg128",
+    "small_Q4_0_kleidiai_t8_tg128",
+    "small_Q4_0_baseline_t8_tg128",
+    "small_Q4_0outq8_baseline_t8_tg128",
+    "small_Q4_0outq8_kleidiai_t8_tg128",
+    "small_Q4_0outq4_kleidiai_t8_tg128",
+    "small_Q4_0outq4_baseline_t8_tg128"
+  ]
+}
