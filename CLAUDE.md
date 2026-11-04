@@ -485,8 +485,10 @@ everything else (ADR-024 has since dropped it from the sweep altogether). If beh
   per-core ceilings are `SDOT` 382, `SMMLA` 765, FP16 `FMLA` 191, `FMLALB`/`FMLALT` 95.6 and
   F32 `FMLA` 95.6 GOPS, and `C(t)` = t × these. **Surprise, sustained vector throttling:** each
   100 ms repetition runs either at that rate or at exactly half of it. The share of fast
-  repetitions at t = 1 is 100 % for `SDOT` and `SMMLA`, 70 % for FP16 `FMLA`, and 40 % for
-  `FMLALB`/`FMLALT` and F32 `FMLA`; at t = 8 it is 0 % for every class, with a sustained mean
+  repetitions (above 75 % of full rate) at t = 1, best chain count, is 100 % for `SDOT` and
+  `SMMLA`, 70 % for FP16 `FMLA`, 60 % for F32 `FMLA` and 40 % for `FMLALB`/`FMLALT` (other chain
+  counts: 0–70 %); at t = 8 it is 0–10 % for every class (corrected 2026-11-04 from "40 % for F32"
+  and "0 %", recomputed from the raw file), with a sustained mean
   of 6.0–7.0 × 10⁹ instructions/s per core (50–59 % of the ceiling). Most likely the cores'
   power management throttling high-power vector instructions (MPMM-style); not confirmed.
   Source: `results/raw/peak/2026-11-02T2141Z.json`.
@@ -670,3 +672,11 @@ everything else (ADR-024 has since dropped it from the sweep altogether). If beh
   times faster than plain code while data sits in cache, but once it comes from memory they all
   hit the same wall; KleidiAI's decode gain turned out to come from one 6-bit layer that ggml
   handles slowly; and half of prompt time goes to attention running in plain C.
+- 2026-11-04 — **Day 9 done:** `report/REPORT.md` and `README.md` written from the processed
+  CSVs, every number cited. Verdicts: RQ1 not supported for this model size (decode below both
+  ceilings); RQ2 partially supported (compute-side, 5–19 % of the ceiling, about half the time in
+  scalar attention); RQ3 partially supported (F16 control flat; the roofline does not predict where
+  KleidiAI helps; on pure Q4_0 matrices it is slower); RQ4 partially supported (24–53× in L1, all
+  SIMD variants equal from DRAM, but neither explains llama.cpp's gaps). Review corrected the §11
+  throttling shares from the raw peak file. In plain English: the method works, and its most useful
+  output is where the time goes, not the speed itself. Next: Day 10 (price, VM hours, final push).
