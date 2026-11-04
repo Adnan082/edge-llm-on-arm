@@ -274,8 +274,9 @@ static bool setup(Data& d, int64_t M, int64_t K, int mode, uint64_t seed, bool p
         d.Xp = alloc_i8(2 * (size_t)K);
         for (int64_t p = 0; p < M / 2; p++)
             for (int64_t c = 0; c < K / 8; c++) {
-                memcpy(d.Wp + (p * K + c) * 16, d.W + (2 * p) * K + c * 8, 8);
-                memcpy(d.Wp + (p * K + c) * 16 + 8, d.W + (2 * p + 1) * K + c * 8, 8);
+                // Row pair p starts at 2K * p; chunk c is the 16 bytes at 16c within it.
+                memcpy(d.Wp + p * 2 * K + c * 16, d.W + (2 * p) * K + c * 8, 8);
+                memcpy(d.Wp + p * 2 * K + c * 16 + 8, d.W + (2 * p + 1) * K + c * 8, 8);
             }
         for (int64_t c = 0; c < K / 8; c++) {
             memcpy(d.Xp + c * 16, d.x0 + c * 8, 8);
