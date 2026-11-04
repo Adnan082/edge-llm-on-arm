@@ -3,7 +3,8 @@
     python -m edge_llm.plots        (make figures)
 
 Reads points.csv and kleidiai.csv (written by analyse.py) and writes five figures as PNG and SVG
-into figures/. Output is deterministic: fixed sizes and fonts, sorted inputs, no timestamps or
+into figures/; if micro.csv exists (written by edge_llm.micro) it also writes dot_int8, the RQ4
+figure. Output is deterministic: fixed sizes and fonts, sorted inputs, no timestamps or
 random ids in the file metadata, so running it twice gives byte-identical files (a test checks).
 
 Colours: phase (prefill blue, decode orange) wherever the phase is the point; four quant colours
@@ -543,6 +544,90 @@ def fig_ratio_breakdown(points: pd.DataFrame) -> plt.Figure:
     return fig
 
 
+# --- (f) RQ4: the int8 dot-product microbenchmark ---------------------------------------------
+
+MICRO_FAMILIES = ["scalar", "autovec", "sdot", "smmla", "sve"]
+MICRO_LABEL = {
+    "scalar": "scalar\n(no auto-vec)",
+    "autovec": "auto-\nvectorised",
+    "sdot": "NEON\nSDOT",
+    "smmla": "i8mm\nSMMLA",
+    "sve": "SVE\nSDOT",
+}
+# Same pairing as the phases: in-cache work is compute-bound like prefill (blue), work streamed from
+# DRAM is bandwidth-bound like decode (orange).
+SET_COLOUR = {"L1": PHASE_COLOUR["prefill"], "DRAM": PHASE_COLOUR["decode"]}
+
+
+def fig_dot_int8(micro: pd.DataFrame) -> plt.Figure:
+    best = micro[micro.is_best.astype(bool) & micro.disasm_ok.astype(bool)]
+    first = micro.iloc[0]
+    fig, axes = plt.subplots(1, 2, figsize=(10.8, 5.8), sharey=True)
+    # Ceilings in GMAC/s: a peak of C ops/s is C/2 MAC/s; B bytes/s at 1 (or 2, SMMLA) MACs per
+    # weight byte is B (or 2B) MAC/s. All four come from the CSV (they are the references in the raw
+    # record), so this figure reads nothing else.
+    lines = {
+        "L1": [
+            (first.ref_C_sdot_GMACs, f"SDOT peak C(1) = {first.ref_C_sdot_GMACs:.0f} GMAC/s"),
+            (first.ref_C_smmla_GMACs, f"SMMLA peak C(1) = {first.ref_C_smmla_GMACs:.0f} GMAC/s"),
+        ],
+        "DRAM": [
+            (first.ref_B_GBps, f"B(1) at 1 MAC per weight byte = {first.ref_B_GBps:.0f} GMAC/s"),
+            (2 * first.ref_B_GBps, f"B(1) at 2 MACs per byte (SMMLA) = {2 * first.ref_B_GBps:.0f}"),
+        ],
+    }
+    lo = _decade_floor(best.gmacs_lo.min()) / 2
+    hi = _decade_ceil(max(best.gmacs_hi.max(), *(v for ls in lines.values() for v, _ in ls)))
+    for ax, ws in zip(axes, ("L1", "DRAM")):
+        colour = SET_COLOUR[ws]
+        sub = best[best.working_set == ws].set_index("family")
+        for value, label in lines[ws]:
+            ax.axhline(value, color=INK, lw=1.0, zorder=1)
+            ax.text(
+                -0.45, value * 1.04, label, fontsize=7.5, color=INK2, ha="left", va="bottom",
+                bbox=_LABEL_BOX,
+            )  # fmt: skip
+        for i, fam in enumerate(MICRO_FAMILIES):
+            if fam not in sub.index:
+                continue
+            r = sub.loc[fam]
+            ax.errorbar(
+                i, r.gmacs, yerr=[[r.gmacs - r.gmacs_lo], [r.gmacs_hi - r.gmacs]], fmt="o", ms=7,
+                color=colour, ecolor=colour, elinewidth=1.2, capsize=3, zorder=3,
+            )  # fmt: skip
+            ax.text(
+                i + 0.1, r.gmacs, f"{r.gmacs:.3g}", fontsize=8, color=INK, ha="left", va="center"
+            )
+            if r.macs_per_weight_byte != 1:  # SMMLA: also show the rate per weight byte
+                per_byte = r.gmacs / r.macs_per_weight_byte
+                ax.plot([i, i], [per_byte, r.gmacs], color=colour, lw=0.8, ls=":", zorder=2)
+                ax.plot(i, per_byte, "o", ms=7, mfc="none", mec=colour, mew=1.2, zorder=3)
+                ax.text(
+                    i, per_byte * 0.92, f"per weight byte: {per_byte:.3g}", fontsize=7.5,
+                    color=INK2, ha="center", va="top",
+                )  # fmt: skip
+        ax.set_yscale("log")
+        ax.set_ylim(lo, hi)
+        ax.set_xlim(-0.5, len(MICRO_FAMILIES) - 0.4)
+        ax.set_xticks(range(len(MICRO_FAMILIES)), [MICRO_LABEL[f] for f in MICRO_FAMILIES])
+        _plain_log(ax, "y", (2, 5))
+        weight = int(micro[micro.working_set == ws].weight_bytes.iloc[0])
+        size = f"{weight / 2**30:g} GiB" if weight >= 2**30 else f"{weight / 1024:g} KiB"
+        ax.set_title(
+            f"{ws}: weights {size}" + (" (in cache)" if ws == "L1" else " (streamed from memory)"),
+            loc="left",
+        )
+    axes[0].set_ylabel("GMAC/s (int8 multiply-accumulates per ns, median; bar = IQR)")
+    _title(
+        fig,
+        "Int8 dot product, one core: what the instruction buys in cache and out of it",
+        "Decode-shaped matrix-vector product, K = 4096, best of 4 and 8 accumulators. SMMLA does 2 "
+        "MACs per weight byte; the hollow dot is its rate per weight byte.",
+    )
+    fig.subplots_adjust(left=0.08, right=0.98, top=0.86, bottom=0.12, wspace=0.05)
+    return fig
+
+
 FIGURES = {
     "predicted_vs_measured": ("points", fig_predicted_vs_measured),
     "kleidiai_speedup": ("pairs", fig_kleidiai_speedup),
@@ -550,6 +635,8 @@ FIGURES = {
     "roofline": ("points", fig_roofline),
     "ratio_breakdown": ("points", fig_ratio_breakdown),
 }
+# Drawn only when its table exists: micro.csv appears once `make micro` has run on the VM (Day 7).
+OPTIONAL_FIGURES = {"dot_int8": ("micro.csv", fig_dot_int8)}
 
 
 def make_all(processed_dir: Path, out_dir: Path) -> list[Path]:
@@ -560,6 +647,9 @@ def make_all(processed_dir: Path, out_dir: Path) -> list[Path]:
     written: list[Path] = []
     for name, (source, draw) in FIGURES.items():
         written += _save(draw(data[source]), out_dir, name)
+    for name, (csv_name, draw) in OPTIONAL_FIGURES.items():
+        if (processed_dir / csv_name).exists():
+            written += _save(draw(pd.read_csv(processed_dir / csv_name)), out_dir, name)
     return written
 
 

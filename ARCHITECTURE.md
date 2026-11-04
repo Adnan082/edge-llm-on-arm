@@ -4,10 +4,12 @@
 > one step to the next, and the rules that keep the results honest. The spec (`CLAUDE.md`)
 > says *what* we measure and *why*; this file says *how* the code is arranged to do it.
 >
-> **Status: Day 6.** Set-up (`env`, `build`, `models`, `check-builds`), `make bandwidth`,
+> **Status: Day 8.** Set-up (`env`, `build`, `models`, `check-builds`), `make bandwidth`,
 > `make peak`, `make predict`, `make bench SET=pilot|full`, `make analyse`, `make figures`,
-> `make test` and `make lint` exist; `micro` is still a placeholder. When code changes the design,
-> update this file in the same commit.
+> `make micro` (+ `make micro-table`), the Day 8 investigation (`make day8-variants`, `make day8`,
+> `make day8-analyse`), `make test` and `make lint` exist. The micro code is
+> written and tested without hardware; its first timings come from the VM. When code changes the
+> design, update this file in the same commit.
 
 ---
 
@@ -169,16 +171,71 @@ the compilers and Python, and clones llama.cpp at the pinned commit into `work/`
   `results/raw/env/<session>_end.json` (that capture is missing for this session).
 - `make figures` — `plots.py` draws five figures from `results/processed/` only, as PNG and
   SVG into `figures/`: `predicted_vs_measured` (headline), `kleidiai_speedup`, `thread_scaling`,
-  `roofline`, `ratio_breakdown`. Fixed sizes and fonts and no timestamps in the metadata, so two
-  runs give byte-identical files.
+  `roofline`, `ratio_breakdown`; and, if `micro.csv` exists, a sixth, `dot_int8` (RQ4). Fixed
+  sizes and fonts and no timestamps in the metadata, so two runs give byte-identical files.
 - README.md and `report/REPORT.md` quote numbers from `results/processed/` by `config_id`.
 
 ### Side test, RQ4 — `make micro` (VM)
 
-- `micro/dot_int8.cpp` checks every int8 dot-product variant against scalar, then times
-  each one (scalar, auto-vectorised, `SDOT`, `SMMLA`, SVE) with data in L1 and in DRAM.
-- `micro/run_micro.py` saves the timings to `results/raw/micro/` and the disassembly of
-  each hot loop to `micro/disasm/`.
+The kernel is a decode-shaped int8 matrix–vector product, `y[m] = Σ_k W[m][k]·x[k]`, with
+K = 4096 (a row's int32 sum cannot overflow), on **one core** (thread 0 on core 0, ADR-014),
+because RQ4 is compared with `B(1)` and `C(1)`. Two working sets: **L1** (4 rows, W = 16 KiB; the
+call is repeated until a repetition lasts ≥ 10 ms) and **DRAM** (262144 rows, W = 1 GiB, at least
+4× the 80 MiB L3).
+
+- `micro/dot_int8_ref.cpp` is the plain-C loop, compiled twice by `run_micro.py`: as `dot_scalar`
+  with auto-vectorisation off (`-fno-tree-vectorize`) and as `dot_autovec` with plain `-O3`
+  (whatever GCC picks is recorded, and is a finding).
+- `micro/dot_int8.cpp` holds the SIMD variants and the harness: `sdot_a4/a8` (NEON `SDOT`),
+  `smmla_a4/a8` (i8mm `SMMLA` on a 2-row tile: it multiplies 2 weight rows by **2 activation
+  vectors** at once, so it does twice the MACs per weight byte of the others; weights and the two
+  vectors are packed into its layout before timing), `sve_a4/a8` (SVE `SDOT`, vector length read
+  at run time). 4 and 8 independent accumulators are both run and the best is reported (the
+  ADR-022 rule). `--check` runs every variant against scalar on random and extreme (−128 / 127)
+  inputs, bit for bit (SMMLA against scalar for two vectors; scalar itself against a 64-bit
+  reference). `--time` times the variants and compares each timed output with scalar's too.
+- `micro/run_micro.py` (`make micro`): build → `--check` (**timing is refused if any variant
+  differs**) → disassemble every kernel into `micro/disasm/dot_int8_<variant>.s` and check its hot
+  loop (found by conditional backward branches only, like `peak.py`): the expected instruction ×
+  accumulators in the loop (`sdot` v-form, `smmla`, `sdot` z-form), no SIMD multiply anywhere in
+  scalar, auto-vec only recorded → time → save `results/raw/micro/<session_id>.json`. A failed
+  loop check leaves the variant out of "best" and fails the run, but the record is kept.
+- `edge_llm/micro.py` holds the constants, the loop check, and the arithmetic (no hardware), and
+  `python -m edge_llm.micro` (`make micro-table`) turns the newest raw record into
+  `results/processed/micro.csv`: GMAC/s (useful MACs), weight GB/s (the like-for-like rate),
+  ratio to scalar both per MAC and per weight byte, share of slow repetitions, and fractions of
+  `C(1)` (L1: median and the p90 rate that `C(1)` is built from) and of `B(1)` / `B₁(1)` (DRAM).
+
+### Day 8 investigation — one check per KleidiAI surprise (ADR-025)
+
+Labelled "Day 8 investigation": it never enters the v1 comparison or the headline figure
+(`analyse.py` reads only the sweep session). It runs in the **same VM session as Day 7**, so there is
+no new `make env`. The logic is in `edge_llm/day8.py` (no hardware, tested in CI); the VM driver is
+`bench/day8.py`.
+
+- **Check A** (surprise 2: does the Q6_K output layer explain Q4_K_M's decode gain?).
+  `make day8-variants` (`infra/make_variants.sh`) makes `small_Q4_0outq8.gguf` and
+  `small_Q4_0outq4.gguf` with the pinned `llama-quantize --output-tensor-type q8_0 | q4_0` from
+  `small_F16.gguf`, records their SHA256s like `make_models.sh`, and `bench.day8 tables` writes their
+  tensor tables and **refuses** unless `output.weight` has the intended type and every other tensor
+  matches `small_Q4_0`. `make day8` then runs tg128 at t = 1 and 8, both builds, for `small_Q4_0`
+  (measured again), `_outq8` and `_outq4` through `run_sweep.run_pair` (same `bench_settings`,
+  pinning, alternating build order, re-run rule). Records: `results/raw/bench/<session_id>/
+  small_Q4_0outq8_kleidiai_t1_tg128.json` etc., validated by `BenchRecord`; a `_day8_check_a.json`
+  manifest names the points and the prediction. The prediction (written before the first run, in
+  `day8.py`): the KleidiAI decode speed-up is clearly smaller for both variants than for Q4_0.
+- **Check B** (surprises 1 and 3: is the prefill difference a fixed cost per call?). No VM:
+  `kleidiai.csv` for Q4_0 and Q8_0 → `results/processed/day8_check_b.csv` (time per prompt in both
+  builds, `delta_t = baseline − kleidiai`, with range) and `day8_check_b_fit.csv` (a fixed + per-token
+  fit, and the growth of `delta_t` from P = 128 to 2048: 1 = fixed cost, 16 = per token).
+- **Check C** (only if `perf` works, at most 30 min): `perf record` of pp128 at t = 1 for Q4_0 and
+  Q8_0 on both builds, 20 repetitions so the profile is dominated by prompt processing. Event
+  `cycles`, else `cpu-clock`. The top 20 of `perf report --stdio --no-children --sort dso,symbol`
+  go to `results/raw/perf/<session_id>/<config_id>.perf_report.txt` and `.json` (`use_for_analysis:
+  false`: the tokens/s inside a perf run is not data). If perf is missing or cannot sample, one
+  `_perf_unavailable.json` says so and the step ends. `perf.data` files stay in `work/perf/`.
+- `make day8-analyse` (anywhere) prints Check B, and Checks A and C when the session's records are
+  present (`DAY8_SESSION=<id>`, default `work/session_id`) → `results/processed/day8_check_a.csv`.
 
 ## 3. Names that tie everything together
 
@@ -259,8 +316,13 @@ Exact fields are defined in `src/edge_llm/schema.py`; this is the overview.
   command, pinning, load average before and after, wall seconds, the build order in the pair,
   and the median/IQR/noisy flag computed from the per-repetition `samples_ts`. Files whose
   name starts with `_` in that folder (`_pilot_summary.*`) are not points.
-- `results/raw/micro/<session_id>.json` — from `run_micro.py`, read by `analyse.py`.
-  Variant, working set (`L1` or `DRAM`), samples, and the check against scalar.
+- `results/raw/micro/<session_id>.json` — from `micro/run_micro.py`, read by `edge_llm.micro`.
+  The compile commands, the `--check` result, per variant and working set (`L1` / `DRAM`) at
+  least 30 per-repetition samples in ns per call (and calls per repetition, pinning, whether the
+  timed output matched scalar), the disassembly check of every hot loop (instruction counts, the
+  loop's instructions, the `.s` file), and the **named and hashed** bandwidth record (the newest
+  valid one) and peak record (the roofline's) with the `B(1)`, `B₁(1)`, `C_sdot(1)` and
+  `C_smmla(1)` taken from them. It holds measurements and references, not derived ratios.
 
 **Results**
 
@@ -277,7 +339,10 @@ Exact fields are defined in `src/edge_llm/schema.py`; this is the overview.
 - `results/processed/session_bandwidth.csv` — `B(t)` at the start and end of the sweep session
   (best valid read variant), drift in %, the session's `B(t)` (median of the two) and its ratio
   to the `B(t)` that v1 used.
-- Not written yet: `peak.csv` and `micro.csv` (RQ4, Day 7).
+- `results/processed/micro.csv` — from `python -m edge_llm.micro`, read by `plots.py` (RQ4). One
+  row per variant and working set; `is_best` marks the fastest accumulator count of each family
+  among the variants whose loop check passed; the reference values it was divided by are columns.
+- Not written yet: `peak.csv`.
 
 ## 5. Rules the code must keep
 
@@ -316,7 +381,11 @@ On a fresh VM, run `bash infra/setup_vm.sh` once before any target.
 | `make bench SET=pilot` (or `full`) | `bench/run_sweep.py` → llama-bench | VM | `results/raw/bench/` |
 | `make analyse` (`SESSION=<id>`) | `python -m edge_llm.analyse` | anywhere | `results/processed/` |
 | `make figures` | `python -m edge_llm.plots` | anywhere | `figures/` |
-| `make micro` | `micro/dot_int8.cpp`, `micro/run_micro.py` | VM | `results/raw/micro/`, `micro/disasm/` |
+| `make micro` | `micro/run_micro.py` (`micro/dot_int8*.cpp`), then `edge_llm.micro` | VM | `results/raw/micro/`, `micro/disasm/`, `results/processed/micro.csv` |
+| `make micro-table` | `python -m edge_llm.micro` | anywhere | `results/processed/micro.csv` |
+| `make day8-variants` | `infra/make_variants.sh`, then `bench.day8 tables` | VM | `work/models/`, `results/models/small_Q4_0out*.json` |
+| `make day8` | `bench/day8.py` (Check A, then C), then `edge_llm.day8` | VM | `results/raw/bench/<session_id>/`, `results/raw/perf/<session_id>/`, `results/processed/day8_*.csv` |
+| `make day8-analyse` | `python -m edge_llm.day8` | anywhere | `results/processed/day8_*.csv` |
 | `make test` | `pytest` (hardware tests only on the VM) | anywhere | — |
 
 ## 7. Tests: what runs where
@@ -340,6 +409,21 @@ On a fresh VM, run `bash infra/setup_vm.sh` once before any target.
   against the Progress Log, F16 near 1.0, the committed tables equal a fresh run), and `plots.py`
   on a synthetic table: every figure written, byte-identical across two runs, no timestamps,
   and its source never names `results/raw` or `results/predictions`.
+  Day 7 adds (no hardware): the micro record's schema (missing variant, fewer than 30 repeats,
+  summary not following from the samples, a repetition under 10 ms, output differing from scalar,
+  `--check` not passed, MACs per weight byte, named references), the speed-up and fraction
+  arithmetic on a hand-worked synthetic record (SMMLA counted per MAC and per weight byte),
+  the best-accumulator rule, the share of slow repetitions, the disassembly checker on synthetic
+  snippets (right and wrong instruction forms, scalar with a SIMD multiply, auto-vec recorded,
+  inner loop rather than row loop), `run_micro` gating (a failed check times and saves nothing; a
+  failed loop check saves, then fails), the real bandwidth and peak files as references, and the
+  RQ4 figure (written, byte-stable).
+  Day 8 adds (no hardware): the variants' table check (right and wrong output type, any other
+  tensor changed, missing or extra), `step_tables` writing a good variant and stopping on a bad one,
+  the Check A running order (both build orders at each thread count and for each variant), speed-ups
+  and the `smaller / overlap / larger` rule on synthetic records (including the re-run rule), Check B
+  arithmetic by hand and on synthetic fixed-cost and per-token cases, the real Check B numbers, the
+  `perf report` parser and record validation, and `perf` missing or unable to sample.
 - **On the VM, `pytest -m hardware`:** the bandwidth kernels (including the k-stream reads and
   the huge-page run) reproduce their known checksums on the right cores and report the
   process CPU set correctly; each peak loop's real disassembly contains its instruction;

@@ -1,5 +1,6 @@
 # Targets follow ARCHITECTURE.md §6. Day 1-4: env, build, models, bandwidth, check-builds, peak,
-# predict, bench, test, lint; Day 5-6: analyse, figures. The rest fail loudly until their day comes, so nothing silently does nothing.
+# predict, bench, test, lint; Day 5-6: analyse, figures; Day 7: micro, micro-table;
+# Day 8: day8-variants, day8, day8-analyse.
 # On a fresh VM run `bash infra/setup_vm.sh` once before any target.
 
 # Use the venv made by setup_vm.sh when it exists.
@@ -8,7 +9,7 @@ PYTHON ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
 # `python -m bench.x` finds bench/ from the repo root; this lets `-m edge_llm.x` find src/.
 export PYTHONPATH := $(CURDIR)/src
 
-.PHONY: env build models bandwidth check-builds peak predict bench analyse figures micro test lint
+.PHONY: env build models bandwidth check-builds peak predict bench analyse figures micro micro-table day8-variants day8 day8-analyse test lint
 
 env:  ## machine details -> results/raw/env/<session_id>.json; also starts the session
 	$(PYTHON) -m bench.env_capture
@@ -53,5 +54,22 @@ analyse:  ## raw bench records + v1 predictions -> results/processed/*.csv
 figures:  ## results/processed/*.csv -> figures/*.png and *.svg
 	$(PYTHON) -m edge_llm.plots
 
-micro:
-	@echo "not implemented yet (Day 7: micro/dot_int8.cpp)"; exit 1
+micro:  ## RQ4 int8 dot product: build, --check, disassemble, time, save; then the table
+	$(PYTHON) -m micro.run_micro
+	$(PYTHON) -m edge_llm.micro
+
+micro-table:  ## newest results/raw/micro/*.json -> results/processed/micro.csv (anywhere)
+	$(PYTHON) -m edge_llm.micro
+
+# Day 8 investigation (ADR-025). Runs in the SAME session as Day 7: do not run `make env` again.
+DAY8_SESSION ?= $(shell cat work/session_id 2>/dev/null)
+
+day8-variants:  ## Check A files: Q4_0 with output.weight Q8_0 / Q4_0, their tables and the "only output changed" check
+	bash infra/make_variants.sh
+
+day8:  ## Checks A (output-layer variants, tg128) and C (perf, pp128), then the tables (VM)
+	$(PYTHON) -m bench.day8 all $(DAY8_ARGS)
+	$(PYTHON) -m edge_llm.day8 --session $(DAY8_SESSION)
+
+day8-analyse:  ## Check B from kleidiai.csv; also A and C if the session's records are present (anywhere)
+	$(PYTHON) -m edge_llm.day8 $(if $(DAY8_SESSION),--session $(DAY8_SESSION),)

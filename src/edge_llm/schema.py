@@ -4,7 +4,7 @@ Plain dataclasses, no third-party validation library. Each `from_dict` rejects m
 unknown keys and checks the invariants a downstream step relies on; `to_dict` gives back the
 JSON-ready form. Day 2 covers: model tensor tables, bandwidth records, build records and
 check-builds (smoke) records. Day 3 adds the peak record, the ggml F16-instruction counts
-and the bench record (llama-bench output).
+and the bench record (llama-bench output). Day 7 adds the int8 dot-product (micro) record.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import re
 from dataclasses import dataclass, field, fields
 from typing import Any
 
+from edge_llm import micro
 from edge_llm.peak import CHAIN_COUNTS, PEAK_CLASSES, c_summary, valid_chain_counts
 from edge_llm.stats import NOISY_THRESHOLD, summarise
 
@@ -682,6 +683,158 @@ class BenchRecord:
     @classmethod
     def from_dict(cls, d: dict) -> BenchRecord:
         _check_keys(cls, d, "bench record")
+        return cls(**d)
+
+    def to_dict(self) -> dict:
+        return dataclasses.asdict(self)
+
+
+# --- micro record (results/raw/micro/<session_id>.json) -------------------------------------
+
+
+@dataclass
+class MicroPoint:
+    """One variant timed on one working set: nanoseconds per call, one sample per repetition."""
+
+    variant: str
+    family: str
+    accumulators: int  # independent SDOT/SMMLA accumulators; 0 for scalar and auto-vec
+    working_set: str  # "L1" or "DRAM"
+    rows: int
+    k: int
+    weight_bytes: int  # rows x k
+    macs_per_call: int  # useful MACs in one call (SMMLA: both activation vectors)
+    macs_per_weight_byte: int  # 2 for SMMLA, else 1
+    calls_per_rep: int  # kernel calls inside one timed repetition
+    pinning: dict
+    reps_warmup: int
+    reps_timed: int
+    output_matches_scalar: bool  # this very kernel's output was compared with scalar's, bit for bit
+    samples_ns_per_call: list[float]
+    median_ns: float
+    q1_ns: float
+    q3_ns: float
+    iqr_ns: float
+    max_ns: float
+    checksum: str  # fold of every timed repetition's output: the work cannot have been dropped
+
+    def __post_init__(self) -> None:
+        w = f"micro point {self.variant} {self.working_set}"
+        _require(self.variant in micro.VARIANTS, f"{w}: unknown variant")
+        family, acc = micro.VARIANTS[self.variant]
+        _require(
+            (self.family, self.accumulators) == (family, acc),
+            f"{w}: family/accumulators disagree with the variant name",
+        )
+        _require(self.working_set in micro.WORKING_SETS, f"{w}: unknown working set")
+        _require(
+            (self.rows, self.k) == (micro.ROWS[self.working_set], micro.K),
+            f"{w}: rows x k must be {micro.ROWS[self.working_set]} x {micro.K}",
+        )
+        _require(self.weight_bytes == self.rows * self.k, f"{w}: weight_bytes != rows x k")
+        want_macs = micro.MACS_PER_WEIGHT_BYTE[self.family]
+        _require(
+            self.macs_per_weight_byte == want_macs,
+            f"{w}: macs_per_weight_byte must be {want_macs} for {family}",
+        )
+        _require(
+            self.macs_per_call == self.weight_bytes * self.macs_per_weight_byte,
+            f"{w}: macs_per_call != weight_bytes x macs_per_weight_byte",
+        )
+        if self.working_set == "L1":
+            _require(self.weight_bytes <= micro.L1D_BYTES // 2, f"{w}: W does not fit in L1")
+        else:
+            _require(
+                self.weight_bytes >= 4 * micro.L3_BYTES, f"{w}: W must be at least 4x the 80 MiB L3"
+            )
+        _require(self.calls_per_rep >= 1, f"{w}: calls_per_rep must be at least 1")
+        _require(
+            self.reps_timed >= micro.MIN_REPS,
+            f"{w}: needs at least {micro.MIN_REPS} timed repeats, has {self.reps_timed}",
+        )
+        _require(len(self.samples_ns_per_call) == self.reps_timed, f"{w}: sample count != reps")
+        _require(all(s > 0 for s in self.samples_ns_per_call), f"{w}: non-positive sample")
+        shortest = min(self.samples_ns_per_call) * self.calls_per_rep * 1e-9
+        _require(
+            shortest >= micro.MIN_REP_SECONDS,
+            f"{w}: a timed repetition lasted {shortest * 1e3:.1f} ms, under 10 ms",
+        )
+        _require(self.output_matches_scalar is True, f"{w}: output differs from the scalar variant")
+        _require(self.pinning.get("getcpu_ok") is True, f"{w}: sched_getcpu() pin check failed")
+        s = summarise(self.samples_ns_per_call)
+        for attr, key in (
+            ("median_ns", "median"),
+            ("q1_ns", "q1"),
+            ("q3_ns", "q3"),
+            ("iqr_ns", "iqr"),
+            ("max_ns", "max"),
+        ):
+            _require(
+                math.isclose(getattr(self, attr), s[key], rel_tol=1e-9),
+                f"{w}: {attr} does not match the samples",
+            )
+
+    @classmethod
+    def from_dict(cls, d: dict) -> MicroPoint:
+        _check_keys(cls, d, "micro point")
+        return cls(**d)
+
+
+@dataclass
+class MicroRecord:
+    schema_version: int
+    kind: str
+    session_id: str
+    captured_utc: str
+    repo: dict
+    binary: dict  # compile commands, sha256, compiler
+    host: dict  # load average before and after
+    sve_vector_bits: int
+    features: dict  # which of NEON / dotprod / i8mm / SVE the binary was compiled for
+    kernel: dict  # the shape of the product and what SMMLA does differently
+    check: dict  # the --check run: every variant against scalar; ok must be true
+    points: list[MicroPoint]
+    disasm: dict  # per variant: the hot-loop check (micro.check_loop) and the .s file
+    references: dict  # the bandwidth and peak records the fractions are taken against
+
+    def __post_init__(self) -> None:
+        _require(self.kind == "micro", f"kind must be 'micro', got {self.kind!r}")
+        # Timing is refused unless every variant matched scalar on the --check inputs.
+        _require(self.check.get("ok") is True, "the --check run did not pass: timing is refused")
+        _require(self.check.get("cases", 0) > 0, "the --check run has no cases")
+        _require(
+            self.kernel.get("smmla_macs_per_weight_byte") == 2,
+            "kernel.smmla_macs_per_weight_byte must say 2 (SMMLA does twice the MACs per byte)",
+        )
+        keys = [(p.variant, p.working_set) for p in self.points]
+        _require(len(set(keys)) == len(keys), "duplicate (variant, working set) points")
+        _require(
+            set(keys) == {(v, ws) for v in micro.VARIANTS for ws in micro.WORKING_SETS},
+            "need every variant on both working sets",
+        )
+        # A failed disassembly check does not make the record invalid (the data are kept, as in the
+        # peak record); the variant is left out of "best". Whether it passed is read from `ok`.
+        _require(set(self.disasm) == set(micro.VARIANTS), "need a disassembly check per variant")
+        for name, d in self.disasm.items():
+            _require(isinstance(d.get("ok"), bool), f"{name}: disassembly check has no ok flag")
+        ref = self.references
+        needed = {
+            "bandwidth_record": ("path", "sha256", "B_best_Bps", "B_one_stream_Bps"),
+            "peak_record": ("path", "sha256", "C_sdot_ops_per_s", "C_smmla_ops_per_s"),
+        }
+        for rec, names in needed.items():
+            _require(rec in ref, f"references.{rec} missing")
+            for key in names:
+                _require(key in ref[rec], f"references.{rec}.{key} missing")
+            _require(_is_sha256(ref[rec]["sha256"]), f"references.{rec}.sha256 malformed")
+            for key in names[2:]:
+                _require(ref[rec][key] > 0, f"references.{rec}.{key} must be positive")
+
+    @classmethod
+    def from_dict(cls, d: dict) -> MicroRecord:
+        _check_keys(cls, d, "micro record")
+        d = dict(d)
+        d["points"] = [MicroPoint.from_dict(p) for p in d["points"]]
         return cls(**d)
 
     def to_dict(self) -> dict:

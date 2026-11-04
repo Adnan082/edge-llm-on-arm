@@ -8,7 +8,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from edge_llm import analyse, plots, sweep
+from edge_llm import analyse, micro, plots, sweep
+from edge_llm.schema import MicroRecord
+from tests.micro_fixtures import micro_record
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -81,3 +83,18 @@ def test_files_carry_no_timestamp(processed, tmp_path):
 def test_plots_reads_only_the_processed_folder():
     src = (REPO / "src" / "edge_llm" / "plots.py").read_text(encoding="utf8")
     assert "results/raw" not in src and "results/predictions" not in src
+
+
+def test_the_rq4_figure_appears_only_when_micro_csv_exists_and_is_byte_stable(processed, tmp_path):
+    import shutil
+
+    assert not any(p.name.startswith("dot_int8") for p in plots.make_all(processed, tmp_path / "0"))
+    folder = tmp_path / "processed"
+    shutil.copytree(processed, folder)
+    micro.write_csv(folder / "micro.csv", micro.derive_rows(MicroRecord.from_dict(micro_record())))
+    first = plots.make_all(folder, tmp_path / "a")
+    second = plots.make_all(folder, tmp_path / "b")
+    assert {"dot_int8.png", "dot_int8.svg"} <= {p.name for p in first}
+    for a, b in zip(first, second):
+        assert a.read_bytes() == b.read_bytes(), a.name
+    assert (tmp_path / "a" / "dot_int8.png").stat().st_size > 5_000
