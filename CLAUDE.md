@@ -680,3 +680,8 @@ everything else (ADR-024 has since dropped it from the sweep altogether). If beh
   SIMD variants equal from DRAM, but neither explains llama.cpp's gaps). Review corrected the §11
   throttling shares from the raw peak file. In plain English: the method works, and its most useful
   output is where the time goes, not the speed itself. Next: Day 10 (price, VM hours, final push).
+- 2026-11-04 — **Day 10 done.** Full check before going public: tests and lint clean, CI green,
+  every link resolves, no secrets or personal identifiers in the repo. README expanded with five
+  Mermaid diagrams (method, roofline, kernel routing, where the time goes, code flow) and the
+  instruction-level results; MIT licence added. Price and VM hours in `configs/machine.yaml` stay
+  `TBD` (owner's choice; no result depends on them). The owner makes the repository public.
