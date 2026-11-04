@@ -570,6 +570,7 @@ everything else (ADR-024 has since dropped it from the sweep altogether). If beh
 | ADR-021 | 2026-11-01 | Bandwidth kernel validity: `B(t)` = the best median over 8 and 16 accumulators × 1, 2, 4 and 8 streams, counting only variants that read at least 1.5× faster from a 32 KiB (L1) buffer than from 1 GiB; the accumulator-doubling check is dropped | The doubling check gave results that are hard to read (24 vs 16 accumulators: 0.95 to 1.03 across k). *Corrected 2026-11-02:* the "spills" reported at the time were a checker bug (it inspected the code after the loop; the real 16-accumulator loop is clean). A read test can only under-measure memory speed, because the checksum proves every byte was read, so the fastest valid variant is the best estimate; the L1 headroom shows the loop itself is not the limit | Hand-written assembly read loops (more code to explain); keeping the doubling check (fails for compiler reasons) |
 | ADR-022 | 2026-11-02 | `C(t)` = the best median over 8, 16 and 28 independent chains, measured at every t for each instruction class; a loop counts only if the disassembly check passes (exact instruction count, no memory access) | On the VM, 28 chains beat 16 at t = 1 for at least one class, so a fixed 16 under-measures the peak. A peak test can only under-measure, because the check proves exactly which instructions ran, so the best valid variant is the best estimate (the same rule as `B(t)`, ADR-021) | A fixed chain count (under-measures); failing the run when more chains help (loses the data) |
 | ADR-023 | 2026-11-02 | `C(t)` = t × the per-core rate in the unthrottled state (90th percentile of the t = 1 repetitions, best over 8/16/28 chains) × operations per instruction; the sustained mean at each t is reported as a second, lower ceiling, and throttling becomes a named gap; refines ADR-022 | The peak runs are two-state: each 100 ms repetition runs at 4 instructions per cycle or at exactly 2, and with all 8 cores busy almost always at 2. A median of two-state samples flips between the states, so it is not a stable ceiling. The per-core issue rate is the hardware limit; the throttling is the chip's power management, which the report measures and names | The median (unstable); the sustained mean as the ceiling (it depends on how much a workload triggers the throttle, so a real kernel could exceed it and push ratios above 1) |
+| ADR-025 | 2026-11-04 | Three full-sweep surprises recorded before any interpretation; investigated on Day 8 (buffer), each with one targeted check, else labelled *unexplained*: (1) KleidiAI is 2.5–5 % *slower* on Q4_0 prefill at short prompts (pp128: 0.950 at t = 1, 0.957 at t = 8; pp512: 0.975 at t = 1); (2) Q4_K_M gains more in decode than the fully covered Q4_0 (tg128 t = 1: 1.256 vs 1.177), although only its Q6_K tensors move to KleidiAI; (3) Q8_0 short-prompt prefill gains most (pp128: 1.365 at t = 1, 1.316 at t = 8). Leading hypothesis for (2), to test, not assume: both files keep the 121.7 MiB output layer in Q6_K, and KleidiAI's 8-bit copy of it decodes faster than ggml's Q6_K GEMV despite more bytes | §13: surprises are recorded before continuing. The F16 control is flat (0.994–1.010 over 18 pairs), so these are kernel differences, not build differences | Explaining them from the numbers alone (would be guessing) |
 | ADR-024 | 2026-11-02 | The full sweep runs Qwen3 0.6B only (144 points); Qwen3 1.7B leaves the sweep (narrows ADR-009). Its files, tensor tables and pilot records stay as recorded evidence | Owner's call, to finish by Fri 2026-11-06: the sweep drops from about 14 h to about 3.5 h. Cost: one model size, so RQ1 cannot show how decode moves towards the bandwidth limit as the model grows (the pilot suggests the 0.6B model's decode is not bandwidth-bound) | Both sizes (about 14 h); 1.7B decode only (about 1 h more) |
 
 ## 16. Progress Log
@@ -635,3 +636,22 @@ everything else (ADR-024 has since dropped it from the sweep altogether). If beh
   Days 5–6 (analysis and figures); Wed — Days 7–8 (int8 microbenchmark, buffer); Thu — Day 9
   (report); Fri — Day 10 (README, fresh-clone check). Stretch goals only if a day frees up.
   The full sweep then dropped to the 0.6B model only (ADR-024), about 3.5 h.
+- 2026-11-03 — **Day 4 gate passed; full sweep complete.** Predictions commit `c29a00e` precedes
+  the sweep records commit `3d6690f` (session `2026-11-02T2215Z`, 22:16–03:28 UTC). All 144
+  points present; 6 noisy points at t = 8 re-run once (`__2` files). Best read bandwidth at
+  t = 1/2/4/8, start → end: 37.04 → 37.65, 74.52 → 74.61, 141.09 → 142.89, 254.51 → 254.45
+  GB/s (drift ≤ 1.6 %). This session's `B(8)` is 7 % above the 237.23 GB/s that v1 uses; v1
+  stays frozen, and the analysis reports the ratios against both. Gap in the record: the
+  end-of-session environment capture (`results/raw/env/2026-11-02T2215Z_end.json`) is missing.
+  In plain English: every planned measurement ran overnight in one 5-hour session, and the
+  machine's memory speed did not move during it. Next: Days 5–6, analysis and figures.
+- 2026-11-04 — **Days 5–6 gate passed** (`make analyse`, `make figures`; headline figure
+  `figures/predicted_vs_measured`). All 144 points joined to v1; no ratio above 1. Measured /
+  predicted: decode 0.24–0.68 (median 0.40), prefill 0.05–0.19 (median 0.09). F16 control
+  0.994–1.010. KleidiAI median speed-up, t = 1 prefill / decode: Q8_0 1.15 / 1.07, Q4_0 0.98 /
+  1.12, Q4_K_M 1.03 / 1.18. Three surprises recorded (ADR-025). Figures were drawn locally with
+  matplotlib 3.10.8 (not the pinned version); redraw with `make figures` on the VM on Day 7 and
+  commit those. In plain English: no measurement beat the physics limit, so the model is not
+  broken; words are written at about 40 % of what memory allows and prompts are read at about
+  9 % of what the maths units allow, and explaining those gaps is the report's job. KleidiAI
+  helps most when writing words, and the control format did not move.

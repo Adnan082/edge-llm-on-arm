@@ -4,9 +4,9 @@
 > one step to the next, and the rules that keep the results honest. The spec (`CLAUDE.md`)
 > says *what* we measure and *why*; this file says *how* the code is arranged to do it.
 >
-> **Status: Day 4.** Set-up (`env`, `build`, `models`, `check-builds`), `make bandwidth`,
-> `make peak`, `make predict`, `make bench SET=pilot|full`, `make test` and `make lint` exist;
-> `analyse`, `figures` and `micro` are still placeholders. When code changes the design,
+> **Status: Day 6.** Set-up (`env`, `build`, `models`, `check-builds`), `make bandwidth`,
+> `make peak`, `make predict`, `make bench SET=pilot|full`, `make analyse`, `make figures`,
+> `make test` and `make lint` exist; `micro` is still a placeholder. When code changes the design,
 > update this file in the same commit.
 
 ---
@@ -152,10 +152,25 @@ the compilers and Python, and clones llama.cpp at the pinned commit into `work/`
 
 ### Step 4 — Compare (anywhere)
 
-- `make analyse` — `analyse.py` turns raw samples into median and IQR, flags noisy
-  points, applies the named exclusion rules, joins each point to its prediction, and
-  computes `ratio = measured / predicted` and the KleidiAI speed-ups.
-- `make figures` — `plots.py` draws every figure from `results/processed/`.
+- `make analyse` (`SESSION=<id>`, default `2026-11-02T2215Z`) — `analyse.py` loads every point
+  record of the session and validates it with `schema.py`, then takes the median and IQR of the
+  per-repetition `samples_ts` (never llama-bench's mean ± stddev; `stats.py`). One named rule
+  chooses between a point's attempts, `RERUN_RULE` (`apply_rerun_rule`, spec §7.4): attempt 1 if
+  it is not noisy; else attempt 2 if it exists, flagged `still_noisy` if that is noisy too; a
+  noisy point that was never re-run is flagged `still_noisy` and warned about. Both files stay
+  on disk. It joins the points to `results/predictions/v1.csv` on `config_id` and stops with an
+  error if either side has a point the other lacks. Each row gets `ratio = measured / predicted`,
+  `ratio_sustained` (against the sustained-ceiling prediction), the rates the measured speed
+  implies (`achieved_GBps`, `achieved_GOPS`, `fraction_of_B`, `fraction_of_C`), and
+  `ratio_session_B`: the same prediction with only its memory term recomputed from this
+  session's own bandwidth (median of the start and end records' best valid read variant). v1
+  stays the headline; `ratio_session_B` is a sensitivity check. Printout: ratio spread per
+  phase, noisy points, and a `WARNING` for every ratio above 1 (spec §8). It never opens
+  `results/raw/env/<session>_end.json` (that capture is missing for this session).
+- `make figures` — `plots.py` draws five figures from `results/processed/` only, as PNG and
+  SVG into `figures/`: `predicted_vs_measured` (headline), `kleidiai_speedup`, `thread_scaling`,
+  `roofline`, `ratio_breakdown`. Fixed sizes and fonts and no timestamps in the metadata, so two
+  runs give byte-identical files.
 - README.md and `report/REPORT.md` quote numbers from `results/processed/` by `config_id`.
 
 ### Side test, RQ4 — `make micro` (VM)
@@ -249,12 +264,20 @@ Exact fields are defined in `src/edge_llm/schema.py`; this is the overview.
 
 **Results**
 
-- `results/processed/bench.csv` — from `analyse.py`, read by `plots.py`, README and
-  REPORT. One row per `config_id`: median, Q1, Q3, noisy flag, exclusion rule (if any),
-  predicted tokens/s, ratio, and the raw file it came from.
-- `results/processed/speedup.csv` — one row per `pair_id`: kleidiai ÷ baseline, and
-  whether the format is a negative control (one KleidiAI does not handle).
-- `results/processed/bandwidth.csv`, `peak.csv`, `micro.csv` — medians of the raw samples.
+- `results/processed/points.csv` — from `analyse.py`, read by `plots.py`, README and REPORT.
+  One row per `config_id`, sorted: median, Q1, Q3, IQR, IQR/median, which attempt was used
+  (`attempt_used`), `noisy_first_attempt`, `still_noisy`, the raw file it came from
+  (`source_file`); the v1 prediction and its inputs, copied from `v1.csv`; `ratio`,
+  `ratio_sustained`, `ratio_session_B`; `arith_intensity` (operations per byte) and the achieved
+  rates.
+- `results/processed/kleidiai.csv` — one row per `pair_id`: both builds' median, Q1, Q3,
+  IQR/median and noisy flag; `speedup` = kleidiai ÷ baseline median; the conservative range
+  `speedup_lo` = kleidiai Q1 ÷ baseline Q3 and `speedup_hi` = kleidiai Q3 ÷ baseline Q1; and
+  `coverage` (F16 negative control, Q4_K_M partial, Q4_0 and Q8_0 full; ADR-013).
+- `results/processed/session_bandwidth.csv` — `B(t)` at the start and end of the sweep session
+  (best valid read variant), drift in %, the session's `B(t)` (median of the two) and its ratio
+  to the `B(t)` that v1 used.
+- Not written yet: `peak.csv` and `micro.csv` (RQ4, Day 7).
 
 ## 5. Rules the code must keep
 
@@ -291,8 +314,8 @@ On a fresh VM, run `bash infra/setup_vm.sh` once before any target.
 | `make peak` | `micro/run_peak.py` (`micro/peak.cpp`) | VM | `results/raw/peak/`, `micro/disasm/` |
 | `make predict` | `python -m edge_llm.roofline` | anywhere | `results/predictions/` |
 | `make bench SET=pilot` (or `full`) | `bench/run_sweep.py` → llama-bench | VM | `results/raw/bench/` |
-| `make analyse` | `analyse.py` | anywhere | `results/processed/` |
-| `make figures` | `plots.py` | anywhere | `figures/` |
+| `make analyse` (`SESSION=<id>`) | `python -m edge_llm.analyse` | anywhere | `results/processed/` |
+| `make figures` | `python -m edge_llm.plots` | anywhere | `figures/` |
 | `make micro` | `micro/dot_int8.cpp`, `micro/run_micro.py` | VM | `results/raw/micro/`, `micro/disasm/` |
 | `make test` | `pytest` (hardware tests only on the VM) | anywhere | — |
 
@@ -310,6 +333,13 @@ On a fresh VM, run `bash infra/setup_vm.sh` once before any target.
   hand-worked fixtures, the `B(t)` and `C(t)` rules on synthetic records, the real inputs against
   the numbers pinned in §11, the committed `v1.csv` against a fresh run) and the rule-3 check
   (`roofline.py` never opens `results/raw/bench/`, and its source never names that folder).
+  Day 5–6 adds: the re-run rule on synthetic samples (clean, noisy then clean, noisy twice, never
+  re-run, missing first attempt), median/IQR and the ratio from synthetic records on disk, the
+  join failing on a missing point on either side, the speed-up range, `achieved_GBps` and the
+  session-B prediction worked by hand, the real session (144 points, 72 pairs, bandwidth drift
+  against the Progress Log, F16 near 1.0, the committed tables equal a fresh run), and `plots.py`
+  on a synthetic table: every figure written, byte-identical across two runs, no timestamps,
+  and its source never names `results/raw` or `results/predictions`.
 - **On the VM, `pytest -m hardware`:** the bandwidth kernels (including the k-stream reads and
   the huge-page run) reproduce their known checksums on the right cores and report the
   process CPU set correctly; each peak loop's real disassembly contains its instruction;
@@ -331,8 +361,8 @@ How `small_Q4_0_kleidiai_t8_tg128` — decode, small model, Q4_0, KleidiAI build
    of `v1.csv`, marked `memory` or `compute`.
 4. `make bench` runs llama-bench for this point. Its samples land in
    `results/raw/bench/<session_id>/small_Q4_0_kleidiai_t8_tg128.json`.
-5. `make analyse` takes the median and IQR of those samples and divides by the
-   prediction: that is the point's `ratio`. Its twin `small_Q4_0_baseline_t8_tg128` (same
+5. `make analyse` takes the median and IQR of those samples (or of `__2` if the first attempt
+   was noisy) and divides by the prediction: that is the point's `ratio`. Its twin `small_Q4_0_baseline_t8_tg128` (same
    `pair_id`) gives the KleidiAI speed-up.
 6. `make figures` draws it as one dot on the headline figure; README and REPORT quote it
    by its `config_id`.

@@ -1,5 +1,5 @@
 # Targets follow ARCHITECTURE.md §6. Day 1-4: env, build, models, bandwidth, check-builds, peak,
-# predict, bench, test, lint. The rest fail loudly until their day comes, so nothing silently does nothing.
+# predict, bench, test, lint; Day 5-6: analyse, figures. The rest fail loudly until their day comes, so nothing silently does nothing.
 # On a fresh VM run `bash infra/setup_vm.sh` once before any target.
 
 # Use the venv made by setup_vm.sh when it exists.
@@ -44,9 +44,14 @@ lint:
 predict:  ## v1 roofline predictions for every full-sweep point -> results/predictions/v1.csv
 	$(PYTHON) -m edge_llm.roofline
 
-analyse:
-	@echo "not implemented yet (Day 5-6: analyse.py)"; exit 1
-figures:
-	@echo "not implemented yet (Day 6: plots.py)"; exit 1
+# The sweep session the tables are built from (override: make analyse SESSION=<id>).
+SESSION ?= 2026-11-02T2215Z
+
+analyse:  ## raw bench records + v1 predictions -> results/processed/*.csv
+	$(PYTHON) -m edge_llm.analyse --session $(SESSION)
+
+figures:  ## results/processed/*.csv -> figures/*.png and *.svg
+	$(PYTHON) -m edge_llm.plots
+
 micro:
 	@echo "not implemented yet (Day 7: micro/dot_int8.cpp)"; exit 1
