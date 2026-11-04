@@ -28,8 +28,10 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 [ -x "$QUANTIZE" ] || die "$QUANTIZE not found: run make build first"
 [ -f "$MODELS_DIR/$F16" ] || die "$MODELS_DIR/$F16 not found: run make models first"
 [ -f "$MODELS_DIR/small_Q4_0.gguf" ] || die "small_Q4_0.gguf not found: run make models first"
-# The option must exist at the pinned commit; do not assume it.
-"$QUANTIZE" --help 2>&1 | grep -q -- "--output-tensor-type" \
+# The option must exist at the pinned commit; do not assume it. llama-quantize prints its usage and
+# exits 1, so the text is captured first: in a pipe, pipefail would turn that exit 1 into a failure.
+QUANTIZE_HELP="$("$QUANTIZE" --help 2>&1 || true)"
+grep -q -- "--output-tensor-type" <<<"$QUANTIZE_HELP" \
     || die "this llama-quantize has no --output-tensor-type option"
 
 # Same helpers as make_models.sh: a hash is recorded the first time, then checked on every run.
