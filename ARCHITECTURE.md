@@ -1,17 +1,6 @@
 # Architecture — edge-llm-on-arm
 
-> How the parts of this repo fit together: what runs where, which files carry data from
-> one step to the next, and the rules that keep the results honest. The spec (`CLAUDE.md`)
-> says *what* we measure and *why*; this file says *how* the code is arranged to do it.
->
-> **Status: Day 8.** Set-up (`env`, `build`, `models`, `check-builds`), `make bandwidth`,
-> `make peak`, `make predict`, `make bench SET=pilot|full`, `make analyse`, `make figures`,
-> `make micro` (+ `make micro-table`), the Day 8 investigation (`make day8-variants`, `make day8`,
-> `make day8-analyse`), `make test` and `make lint` exist. The micro code is
-> written and tested without hardware; its first timings come from the VM. When code changes the
-> design, update this file in the same commit.
 
----
 
 ## 1. The big picture
 
